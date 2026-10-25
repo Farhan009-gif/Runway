@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,16 +21,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Accept Android SDK licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
 
-      # The build expects debug.keystore in the project root. Create it if it is not in the repo.
-            - name: Create permanent debug keystore if missing
+      - name: Create permanent debug keystore if missing
         run: |
           if [ ! -f debug.keystore ]; then
             keytool -genkeypair -v -keystore debug.keystore \
