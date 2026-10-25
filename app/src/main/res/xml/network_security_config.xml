@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android's static <domain-config> XML only accepts exact domain names or literal IPs
+    and cannot express dynamic LAN IP ranges (e.g. 192.168.x.x) or Tailscale subnets (100.x.y.z).
+    Therefore, OS-level cleartext is permitted here while strict HTTPS-by-default and
+    per-host cleartext whitelisting are enforced in the application's OkHttp
+    CleartextHostGuardInterceptor using the User-Approved Cleartext Host List.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

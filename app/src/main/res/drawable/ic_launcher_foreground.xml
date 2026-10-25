@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- Runway lines: stroke #6C7CFF, 28px at 512 scale, round caps and joins -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M156,400 L236,112 L276,112 L356,400"
+        android:strokeColor="#6C7CFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="28" />
+    <!-- Center dashes: white, 16px, round caps, getting shorter toward the top -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M256,360 L256,312 M256,266 L256,230 M256,192 L256,168"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="16" />
+</vector>

@@ -1,0 +1,1212 @@
+package com.example
+
+import android.os.Bundle
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.local.McpApprovalMode
+import com.example.data.local.OmniDatabase
+import com.example.data.local.ProviderPresetType
+import com.example.data.repository.OmniRepository
+import com.example.data.security.BiometricAuthHelper
+import com.example.data.security.TinkSecretVault
+import com.example.ui.components.CleartextHostWarningDialog
+import com.example.ui.components.CompareTargetsBottomSheet
+import com.example.ui.components.ConversationSkillsAndToolsSheet
+import com.example.ui.components.ExportPreviewDialog
+import com.example.ui.components.GitHubPushDialog
+import com.example.ui.components.LucideIcons
+import com.example.ui.components.McpSafetyApprovalSheet
+import com.example.ui.components.MinimalButton
+import com.example.ui.components.MinimalSegmentedControl
+import com.example.ui.components.MinimalToast
+import com.example.ui.components.ModelPickerBottomSheet
+import com.example.ui.components.OmniAgentCommandCenterSheet
+import com.example.ui.components.OmniAutopilotScreen
+import com.example.ui.components.OmniRouteOnboardingSheet
+import com.example.ui.components.ParameterTuningBottomSheet
+import com.example.ui.components.PromptLibraryBottomSheet
+import com.example.ui.components.TerminalAndHealthBottomSheet
+import com.example.ui.components.ToolCallApprovalDialog
+import com.example.ui.components.UsageAnalyticsScreen
+import com.example.ui.components.YouTubePublishDialog
+import com.example.ui.screens.ChatWorkspaceScreen
+import com.example.ui.screens.ConnectorsScreen
+import com.example.ui.screens.ImageStudioScreen
+import com.example.ui.screens.IntegrationsWorkspaceScreen
+import com.example.ui.screens.MinimalSettingsAndThemeScreen
+import com.example.ui.screens.ProvidersScreen
+import com.example.ui.screens.SettingsWorkspaceScreen
+import com.example.ui.screens.VideoStudioScreen
+import com.example.ui.theme.OmniAIStudioTheme
+import com.example.ui.theme.SoftIndigo
+import com.example.ui.viewmodel.OmniStudioViewModel
+import com.example.ui.viewmodel.ProvidersUiState
+import com.example.ui.viewmodel.ProvidersViewModel
+import com.example.ui.viewmodel.WorkspaceTab
+import kotlinx.coroutines.delay
+
+class MainActivity : FragmentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        val database = OmniDatabase.getInstance(applicationContext)
+        val dao = database.omniDao()
+        val secretVault = TinkSecretVault(applicationContext)
+        val repository = OmniRepository(applicationContext, dao, secretVault)
+
+        setContent {
+            val viewModel: OmniStudioViewModel = viewModel(
+                factory = OmniStudioViewModel.Factory(repository, dao)
+            )
+            val providersViewModel: ProvidersViewModel = viewModel(
+                factory = ProvidersViewModel.Factory(repository, secretVault, dao)
+            )
+            val providersUiState by providersViewModel.uiState.collectAsStateWithLifecycle()
+            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val providers by viewModel.providers.collectAsStateWithLifecycle()
+            val models by viewModel.models.collectAsStateWithLifecycle()
+            val conversations by viewModel.conversations.collectAsStateWithLifecycle()
+            val activeMessages by viewModel.activeMessages.collectAsStateWithLifecycle()
+            val promptTemplates by viewModel.promptTemplates.collectAsStateWithLifecycle()
+            val usageRecords by viewModel.usageRecords.collectAsStateWithLifecycle()
+            val generatedImages by viewModel.generatedImages.collectAsStateWithLifecycle()
+            val videoJobs by viewModel.videoJobs.collectAsStateWithLifecycle()
+            val integrationLogs by viewModel.integrationLogs.collectAsStateWithLifecycle()
+            val skills by viewModel.skills.collectAsStateWithLifecycle()
+            val mcpServers by viewModel.mcpServers.collectAsStateWithLifecycle()
+            val mcpTools by viewModel.mcpTools.collectAsStateWithLifecycle()
+            val toolCallLogs by viewModel.toolCallLogs.collectAsStateWithLifecycle()
+            val activeConversationToolLogs by viewModel.activeConversationToolLogs.collectAsStateWithLifecycle()
+            val diagnosticEntries by viewModel.diagnosticEntries.collectAsStateWithLifecycle()
+            val agentState by viewModel.agentState.collectAsStateWithLifecycle()
+            val runwayFolders by viewModel.runwayFolders.collectAsStateWithLifecycle()
+            val runwayConversationMetas by viewModel.runwayConversationMetas.collectAsStateWithLifecycle()
+            val runwayAllMessageNodes by viewModel.runwayAllMessageNodes.collectAsStateWithLifecycle()
+            val runwayAllDocuments by viewModel.runwayAllDocuments.collectAsStateWithLifecycle()
+
+            OmniAIStudioTheme(
+                themeMode = uiState.themeMode,
+                dynamicColor = uiState.dynamicColorEnabled
+            ) {
+                var showInitialSplash by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(450L)
+                    showInitialSplash = false
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (uiState.biometricGateEnabled && !uiState.isBiometricUnlocked) {
+                        BiometricLockScreen(
+                            onUnlockRequest = {
+                                BiometricAuthHelper.authenticate(
+                                    activity = this@MainActivity,
+                                    onSuccess = { viewModel.setBiometricUnlocked(true) },
+                                    onError = { /* remains locked */ }
+                                )
+                            }
+                        )
+                    } else {
+                        OmniStudioRoot(
+                            uiState = uiState,
+                            providers = providers,
+                            models = models,
+                            conversations = conversations,
+                            activeMessages = activeMessages,
+                            promptTemplates = promptTemplates,
+                            usageRecords = usageRecords,
+                            generatedImages = generatedImages,
+                            videoJobs = videoJobs,
+                            integrationLogs = integrationLogs,
+                            skills = skills,
+                            mcpServers = mcpServers,
+                            mcpTools = mcpTools,
+                            toolCallLogs = toolCallLogs,
+                            activeConversationToolLogs = activeConversationToolLogs,
+                            diagnosticEntries = diagnosticEntries,
+                            runwayFolders = runwayFolders,
+                            runwayConversationMetas = runwayConversationMetas,
+                            runwayAllMessageNodes = runwayAllMessageNodes,
+                            runwayAllDocuments = runwayAllDocuments,
+                            viewModel = viewModel,
+                            providersViewModel = providersViewModel,
+                            providersUiState = providersUiState,
+                            agentState = agentState
+                        )
+                    }
+
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showInitialSplash,
+                        enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(150)),
+                        exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(180))
+                    ) {
+                        RunwaySplashScreen()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunwaySplashScreen() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(androidx.compose.ui.graphics.Color(0xFF0B0D10))
+            .testTag("runway_splash_screen"),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            com.example.ui.components.RunwayLogoIcon(size = 84.dp)
+            com.example.ui.components.RunwayWordmark(
+                color = androidx.compose.ui.graphics.Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun BiometricLockScreen(
+    onUnlockRequest: () -> Unit
+) {
+    LaunchedEffect(Unit) {
+        onUnlockRequest()
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            com.example.ui.components.RunwayLogoIcon(size = 64.dp)
+            Spacer(modifier = Modifier.height(12.dp))
+            com.example.ui.components.RunwayWordmark()
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Authenticate to unlock your encrypted keys and conversations.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            MinimalButton(
+                text = "Unlock",
+                onClick = onUnlockRequest,
+                filled = true,
+                testTag = "biometric_unlock_button"
+            )
+        }
+    }
+}
+
+@Composable
+private fun OmniStudioRoot(
+    uiState: com.example.ui.viewmodel.OmniUiState,
+    providers: List<com.example.data.local.ProviderInstanceEntity>,
+    models: List<com.example.data.local.ModelDescriptorEntity>,
+    conversations: List<com.example.data.local.ConversationEntity>,
+    activeMessages: List<com.example.data.local.MessageEntity>,
+    promptTemplates: List<com.example.data.local.PromptTemplateEntity>,
+    usageRecords: List<com.example.data.local.UsageRecordEntity>,
+    generatedImages: List<com.example.data.local.GeneratedImageEntity>,
+    videoJobs: List<com.example.data.local.VideoJobEntity>,
+    integrationLogs: List<com.example.data.local.IntegrationAuditLogEntity>,
+    skills: List<com.example.data.local.SkillEntity>,
+    mcpServers: List<com.example.data.local.McpServerEntity>,
+    mcpTools: List<com.example.data.local.McpToolEntity>,
+    toolCallLogs: List<com.example.data.local.ToolCallLogEntity>,
+    activeConversationToolLogs: List<com.example.data.local.ToolCallLogEntity>,
+    diagnosticEntries: List<com.example.data.provider.RequestDiagnosticEntry> = emptyList(),
+    runwayFolders: List<com.example.data.local.RunwayFolderEntity> = emptyList(),
+    runwayConversationMetas: List<com.example.data.local.RunwayConversationMetaEntity> = emptyList(),
+    runwayAllMessageNodes: List<com.example.data.local.RunwayMessageNodeEntity> = emptyList(),
+    runwayAllDocuments: List<com.example.data.local.RunwayDocumentEntity> = emptyList(),
+    viewModel: OmniStudioViewModel,
+    providersViewModel: ProvidersViewModel? = null,
+    providersUiState: ProvidersUiState? = null,
+    agentState: com.example.data.agent.OmniAgentUiState = com.example.data.agent.OmniAgentUiState()
+) {
+    // Sub-tab inside More: 0 = Usage, 1 = Keys, 2 = Settings & Theme
+    var moreSubTab by rememberSaveable { mutableIntStateOf(1) }
+
+    // Sync More sub-tab when navigated via ViewModel or Agent
+    LaunchedEffect(uiState.currentTab) {
+        if (uiState.currentTab == WorkspaceTab.USAGE) {
+            moreSubTab = 0
+        } else if (uiState.currentTab == WorkspaceTab.SETTINGS && moreSubTab == 0) {
+            moreSubTab = 1
+        }
+    }
+
+    // Auto-dismiss status toast after 4s
+    LaunchedEffect(uiState.statusToast) {
+        if (!uiState.statusToast.isNullOrBlank()) {
+            delay(4000)
+            viewModel.clearToast()
+        }
+    }
+
+    if (uiState.currentTab != WorkspaceTab.CHAT) {
+        BackHandler {
+            viewModel.setCompareModeEnabled(false)
+            viewModel.selectTab(WorkspaceTab.CHAT)
+        }
+    }
+
+    val activeConversation = remember(conversations, uiState.activeConversationId) {
+        conversations.firstOrNull { it.id == uiState.activeConversationId } ?: conversations.firstOrNull()
+    }
+    val activeProvider = remember(providers, activeConversation) {
+        providers.firstOrNull { it.id == activeConversation?.providerInstanceId } ?: providers.firstOrNull()
+    }
+    val activeModelDescriptor = remember(models, activeConversation) {
+        models.firstOrNull {
+            it.providerInstanceId == activeConversation?.providerInstanceId &&
+                it.modelId == activeConversation?.modelId
+        }
+    }
+    val omniProvider = remember(providers) {
+        providers.firstOrNull { it.presetEnum() == ProviderPresetType.OMNIROUTE }
+    }
+
+    // Modals & Bottom Sheets
+    if (agentState.isSheetOpen) {
+        OmniAgentCommandCenterSheet(
+            agentState = agentState,
+            studioUiState = uiState,
+            activeModelName = activeModelDescriptor?.displayName ?: activeConversation?.modelId ?: "gpt-4o",
+            encryptedKeysCount = uiState.maskedKeysByProvider.size,
+            enabledSkillsCount = skills.count { it.isEnabled },
+            previewParsedActions = viewModel::previewAgentActions,
+            onCommandInputChange = viewModel::updateAgentCommandInput,
+            onExecuteCommand = { cmd ->
+                viewModel.executeAgentCommand(cmd, providersViewModel)
+            },
+            onToggleLlmPlanner = viewModel::setAgentUseLlmPlanner,
+            onUndoLastCommand = viewModel::undoLastAgentCommand,
+            onClearHistory = viewModel::clearAgentHistory,
+            onDismiss = { viewModel.setAgentSheetOpen(false) }
+        )
+    }
+
+    if (uiState.showOnboardingSheet) {
+        OmniRouteOnboardingSheet(
+            omniProvider = omniProvider,
+            approvedHosts = uiState.approvedCleartextHosts,
+            isBusy = uiState.busyProviderId == omniProvider?.id && omniProvider != null,
+            extractHttpHost = viewModel::extractHttpHost,
+            onTestAndFetch = { url, key ->
+                if (omniProvider != null) {
+                    viewModel.testAndFetchModels(omniProvider, url, key.takeIf { it.isNotBlank() })
+                }
+            },
+            onComplete = { url, key, approveHost ->
+                viewModel.completeOnboarding(url, key, approveHost)
+            },
+            onDismiss = {
+                viewModel.setShowOnboardingSheet(false)
+            }
+        )
+    }
+
+    if (uiState.showModelPickerSheet) {
+        ModelPickerBottomSheet(
+            providers = providers,
+            models = models,
+            activeProviderId = activeConversation?.providerInstanceId,
+            activeModelId = activeConversation?.modelId,
+            searchQuery = uiState.modelPickerSearchQuery,
+            onSearchQueryChange = viewModel::updateModelPickerSearchQuery,
+            onSelectModel = viewModel::switchActiveConversationModel,
+            onToggleFavorite = viewModel::toggleFavoriteModel,
+            onAddManualModel = viewModel::addManualModel,
+            onFetchModelsForProvider = { prov -> viewModel.testAndFetchModels(prov) },
+            isFetchingProviderId = uiState.busyProviderId,
+            onDismiss = { viewModel.setShowModelPickerSheet(false) }
+        )
+    }
+
+    if (uiState.showCompareTargetSheet) {
+        CompareTargetsBottomSheet(
+            providers = providers,
+            models = models,
+            selectedTargets = uiState.compareTargets,
+            onToggleTarget = viewModel::toggleModelInCompareTargets,
+            onDismiss = { viewModel.setShowCompareTargetSheet(false) }
+        )
+    }
+
+    if (uiState.showTerminalAndHealthSheet) {
+        TerminalAndHealthBottomSheet(
+            terminalLogs = uiState.omniRouteTerminalLogs,
+            serverStatus = uiState.localhostServerStatus,
+            modelHealthByKey = uiState.modelHealthByKey,
+            isScanning = uiState.isScanningModelsHealth,
+            providers = providers,
+            models = models,
+            onSendCommand = viewModel::executeTerminalCommand,
+            onStartLocalhost = viewModel::startLocalhostOmniRoute,
+            onStopLocalhost = viewModel::stopLocalhostOmniRoute,
+            onScanHealthy = viewModel::scanHealthyProvidersAndModels,
+            onSelectHealthyModel = { provId, modId ->
+                viewModel.switchActiveConversationModel(provId, modId)
+                viewModel.setShowTerminalAndHealthSheet(false)
+            },
+            onDismiss = { viewModel.setShowTerminalAndHealthSheet(false) }
+        )
+    }
+
+    if (uiState.showPromptLibrarySheet) {
+        PromptLibraryBottomSheet(
+            templates = promptTemplates,
+            searchQuery = uiState.promptSearchQuery,
+            onSearchQueryChange = viewModel::updatePromptSearchQuery,
+            onApplyTemplate = viewModel::applyPromptTemplate,
+            onToggleFavorite = viewModel::toggleFavoritePromptTemplate,
+            onSaveTemplate = viewModel::savePromptTemplate,
+            onDeleteTemplate = viewModel::deletePromptTemplate,
+            onDismiss = { viewModel.setShowPromptLibrarySheet(false) }
+        )
+    }
+
+    if (uiState.showParameterSheet) {
+        ParameterTuningBottomSheet(
+            conversation = activeConversation,
+            modelDescriptor = activeModelDescriptor,
+            onSaveParameters = viewModel::updateConversationParameters,
+            onDismiss = { viewModel.setShowParameterSheet(false) }
+        )
+    }
+
+    if (uiState.showSkillsAndToolsSheet) {
+        ConversationSkillsAndToolsSheet(
+            conversation = activeConversation,
+            skills = skills,
+            mcpServers = mcpServers,
+            mcpTools = mcpTools,
+            supportsFunctionCalling = activeModelDescriptor?.supportsFunctionCalling ?: true,
+            onToggleConversationSkill = viewModel::toggleSkillForActiveConversation,
+            onSetAutoSelectSkills = viewModel::setConversationAutoSelectSkills,
+            onSetMcpToolsEnabled = viewModel::setConversationMcpToolsEnabled,
+            onSetMaxToolIterations = viewModel::setConversationMaxToolIterations,
+            onToggleMcpToolEnabled = viewModel::toggleMcpToolEnabled,
+            onOpenIntegrationsHub = {
+                viewModel.setShowSkillsAndToolsSheet(false)
+                viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
+            },
+            onOpenSafetyApprovalSheet = {
+                viewModel.setShowSkillsAndToolsSheet(false)
+                viewModel.setShowSafetyApprovalSheet(true)
+            },
+            onDismiss = { viewModel.setShowSkillsAndToolsSheet(false) }
+        )
+    }
+
+    if (uiState.showSafetyApprovalSheet) {
+        McpSafetyApprovalSheet(
+            mcpServers = mcpServers,
+            mcpTools = mcpTools,
+            onUpdateServerApprovalMode = viewModel::updateMcpServerApprovalMode,
+            onToggleToolReadOnlyOverride = viewModel::toggleMcpToolReadOnlyOverride,
+            onSetAllServersMode = viewModel::setAllServersApprovalMode,
+            onResetConversationApprovals = viewModel::resetConversationApprovals,
+            onPreviewApprovalDialog = viewModel::previewToolApprovalDialog,
+            onDismiss = { viewModel.setShowSafetyApprovalSheet(false) }
+        )
+    }
+
+    uiState.pendingToolApproval?.let { approvalReq ->
+        ToolCallApprovalDialog(
+            request = approvalReq,
+            onDecision = viewModel::resolvePendingToolApproval
+        )
+    }
+
+    uiState.pendingCleartextApproval?.let { pending ->
+        CleartextHostWarningDialog(
+            pending = pending,
+            onApprove = viewModel::confirmPendingCleartextHost,
+            onCancel = viewModel::dismissPendingCleartextHost
+        )
+    }
+
+    uiState.exportPreview?.let { preview ->
+        ExportPreviewDialog(
+            payload = preview,
+            onDismiss = viewModel::dismissExportPreview,
+            onCopiedToast = { /* handled via clipboard feedback */ },
+            onChangeConversationExportOptions = viewModel::prepareConversationExport
+        )
+    }
+
+    uiState.gitHubPushDraft?.let { ghDraft ->
+        GitHubPushDialog(
+            draft = ghDraft,
+            maskedGitHubPat = uiState.maskedGitHubPat,
+            repos = uiState.gitHubRepos,
+            isBusy = uiState.isGitHubBusy,
+            onSavePatInline = viewModel::saveGitHubPat,
+            onFetchRepos = { viewModel.verifyAndFetchGitHubRepos(null) },
+            onConfirmCreateGist = viewModel::executeGitHubGistPush,
+            onConfirmRepoCommit = viewModel::executeGitHubRepoCommit,
+            onDismiss = viewModel::dismissGitHubPushDialog
+        )
+    }
+
+    uiState.youTubePublishDraft?.let { ytDraft ->
+        YouTubePublishDialog(
+            draft = ytDraft,
+            maskedYouTubeToken = uiState.maskedYouTubeAccessToken,
+            youTubeChannelSummary = uiState.youTubeChannelSummary,
+            isBusy = uiState.isYouTubeBusy,
+            onSaveAccessTokenInline = { token ->
+                viewModel.saveYouTubeOAuthCredentials(uiState.youTubeClientId, token)
+            },
+            onConfirmUpload = { title, desc, tagsCsv, privacy ->
+                viewModel.executeYouTubeVideoUpload(
+                    job = ytDraft.job,
+                    title = title,
+                    description = desc,
+                    tagsCsv = tagsCsv,
+                    privacyStatus = privacy
+                )
+            },
+            onDismiss = viewModel::dismissYouTubePublishDialog
+        )
+    }
+
+    val isChatSelected = uiState.currentTab == WorkspaceTab.CHAT || uiState.currentTab == WorkspaceTab.COMPARE
+    val isCreateSelected = uiState.currentTab == WorkspaceTab.IMAGES || uiState.currentTab == WorkspaceTab.VIDEOS
+    val isAutopilotSelected = uiState.currentTab == WorkspaceTab.AUTOPILOT
+    val isConnectSelected = uiState.currentTab == WorkspaceTab.INTEGRATIONS
+    val isMoreSelected = uiState.currentTab == WorkspaceTab.USAGE || uiState.currentTab == WorkspaceTab.SETTINGS
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useNavigationRail = maxWidth >= 760.dp
+
+        Scaffold(
+            contentWindowInsets = WindowInsets.safeDrawing,
+            containerColor = MaterialTheme.colorScheme.background,
+            bottomBar = {
+                if (!useNavigationRail) {
+                    MinimalBottomNavBar(
+                        isChatSelected = isChatSelected,
+                        isCreateSelected = isCreateSelected,
+                        isAutopilotSelected = isAutopilotSelected,
+                        isConnectSelected = isConnectSelected,
+                        isMoreSelected = isMoreSelected,
+                        onSelectChat = { viewModel.selectTab(WorkspaceTab.CHAT) },
+                        onSelectCreate = {
+                            viewModel.setCompareModeEnabled(false)
+                            if (uiState.currentTab != WorkspaceTab.VIDEOS) {
+                                viewModel.selectTab(WorkspaceTab.IMAGES)
+                            }
+                        },
+                        onSelectAutopilot = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.AUTOPILOT)
+                        },
+                        onSelectConnect = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
+                        },
+                        onSelectMore = {
+                            viewModel.setCompareModeEnabled(false)
+                            if (moreSubTab == 0) {
+                                viewModel.selectTab(WorkspaceTab.USAGE)
+                            } else {
+                                viewModel.selectTab(WorkspaceTab.SETTINGS)
+                            }
+                        }
+                    )
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useNavigationRail) {
+                    MinimalSideNavRail(
+                        isChatSelected = isChatSelected,
+                        isCreateSelected = isCreateSelected,
+                        isAutopilotSelected = isAutopilotSelected,
+                        isConnectSelected = isConnectSelected,
+                        isMoreSelected = isMoreSelected,
+                        onSelectChat = { viewModel.selectTab(WorkspaceTab.CHAT) },
+                        onSelectCreate = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.IMAGES)
+                        },
+                        onSelectAutopilot = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.AUTOPILOT)
+                        },
+                        onSelectConnect = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
+                        },
+                        onSelectMore = {
+                            viewModel.setCompareModeEnabled(false)
+                            viewModel.selectTab(WorkspaceTab.SETTINGS)
+                        }
+                    )
+                }
+
+                Box(modifier = Modifier.weight(1f)) {
+                    if (uiState.showConnectorsScreen) {
+                        ConnectorsScreen(
+                            mcpServers = mcpServers,
+                            mcpTools = mcpTools,
+                            connectorDiscoveryEnabled = uiState.connectorDiscoveryEnabled,
+                            selectedConnectorId = uiState.selectedConnectorIdForDetail,
+                            connectorDefaultPolicies = uiState.connectorDefaultChoices,
+                            perToolPolicies = uiState.connectorToolChoices,
+                            confirmedWriteAlwaysToolIds = uiState.confirmedWriteAlwaysTools,
+                            maskedTokensByServer = uiState.maskedMcpTokensByServer,
+                            approvedCleartextHosts = uiState.approvedCleartextHosts,
+                            busyServerId = uiState.busyMcpServerId,
+                            onBack = viewModel::closeConnectorsScreen,
+                            onSelectConnector = viewModel::selectConnectorForDetail,
+                            onToggleConnectorDiscovery = viewModel::setConnectorDiscoveryEnabled,
+                            onAddAndConnectMcpServer = viewModel::addAndConnectMcpConnector,
+                            onToggleConnectorConnected = viewModel::toggleMcpServerEnabled,
+                            onTestConnectionAndDiscover = viewModel::testAndDiscoverMcpServer,
+                            onUpdateConnectorToken = viewModel::updateConnectorTokenOnly,
+                            onClearConnectorToken = viewModel::clearMcpServerToken,
+                            onDeleteConnector = viewModel::deleteMcpServer,
+                            onSetAllToolsChoice = viewModel::setConnectorAllToolsChoice,
+                            onSetSingleToolChoice = viewModel::setSingleToolChoice
+                        )
+                    } else when (uiState.currentTab) {
+                        WorkspaceTab.CHAT, WorkspaceTab.COMPARE -> {
+                            ChatWorkspaceScreen(
+                                uiState = uiState,
+                                providers = providers,
+                                models = models,
+                                conversations = conversations,
+                                messages = activeMessages,
+                                skills = skills,
+                                mcpTools = mcpTools,
+                                conversationToolLogs = activeConversationToolLogs,
+                                folders = runwayFolders,
+                                conversationMetas = runwayConversationMetas,
+                                allMessageNodes = runwayAllMessageNodes,
+                                allDocuments = runwayAllDocuments,
+                                onSelectConversation = viewModel::selectConversation,
+                                onNewConversation = { viewModel.createNewConversation() },
+                                onContinueLatestConversation = viewModel::continueLatestConversation,
+                                onTogglePinConversation = viewModel::togglePinConversation,
+                                onRenameConversation = viewModel::renameConversation,
+                                onDuplicateConversation = viewModel::duplicateConversation,
+                                onDeleteConversation = viewModel::deleteConversation,
+                                onUndoDeleteConversation = viewModel::undoDeleteConversation,
+                                onExportConversation = { id, asJson ->
+                                    viewModel.prepareConversationExport(id, asJson, false)
+                                },
+                                onExportConversationWithBranches = viewModel::prepareConversationExport,
+                                onSelectFolderFilter = viewModel::selectHistoryFolderFilter,
+                                onMoveConversationToFolder = viewModel::moveConversationToFolder,
+                                onSaveFolder = viewModel::saveRunwayFolder,
+                                onDeleteFolder = viewModel::deleteRunwayFolder,
+                                onHistorySearchChange = viewModel::updateHistorySearchQuery,
+                                onOpenModelPicker = { viewModel.setShowModelPickerSheet(true) },
+                                onOpenParameterSheet = { viewModel.setShowParameterSheet(true) },
+                                onOpenPromptLibrary = { viewModel.setShowPromptLibrarySheet(true) },
+                                onOpenSkillsAndToolsSheet = { viewModel.setShowSkillsAndToolsSheet(true) },
+                                onOpenCompareTargetPicker = { viewModel.setShowCompareTargetSheet(true) },
+                                onToggleCompareMode = viewModel::setCompareModeEnabled,
+                                onOpenOnboardingGuide = { viewModel.setShowOnboardingSheet(true) },
+                                onDraftChange = viewModel::updateDraftMessage,
+                                onAttachImage = viewModel::attachImage,
+                                onAddMediaAttachments = viewModel::addMediaAttachments,
+                                onRemoveMediaAttachment = viewModel::removeMediaAttachment,
+                                onClearMediaAttachments = viewModel::clearMediaAttachments,
+                                onSendMessage = viewModel::sendMessage,
+                                onStopGeneration = viewModel::stopGeneration,
+                                onRegenerateLast = viewModel::regenerateLastResponse,
+                                onStartEditMessage = viewModel::startEditingMessage,
+                                onCancelEditMessage = viewModel::cancelEditingMessage,
+                                onApproveCleartextHostFromError = { host ->
+                                    viewModel.approveCleartextHostManually(host)
+                                    viewModel.dismissError()
+                                },
+                                onDismissError = viewModel::dismissError,
+                                onCopiedToast = { /* clipboard copy */ },
+                                onPushConversationToGitHub = viewModel::openGitHubPushForConversation,
+                                onPushContentToGitHub = viewModel::openGitHubPushForContent,
+                                onSelectProvider = viewModel::selectProviderForActiveChat,
+                                onSelectModel = viewModel::switchActiveConversationModel,
+                                onRunPreflightCheck = viewModel::runProviderPreflightCheck,
+                                onSwitchToDirectModel = { provId ->
+                                    viewModel.runOmniRouteCleanTerminal(provId)
+                                    viewModel.switchToDirectModelForProvider(provId)
+                                },
+                                onOpenProviderSettings = {
+                                    moreSubTab = 1
+                                    viewModel.selectTab(WorkspaceTab.SETTINGS)
+                                },
+                                onOpenTerminalAndHealthSheet = { viewModel.setShowTerminalAndHealthSheet(true) },
+                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                            )
+                        }
+
+                        WorkspaceTab.IMAGES, WorkspaceTab.VIDEOS -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                            ) {
+                                // Segmented Control (Images | Videos) inside the Create screen
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                ) {
+                                    MinimalSegmentedControl(
+                                        options = listOf("Images", "Videos"),
+                                        selectedIndex = if (uiState.currentTab == WorkspaceTab.VIDEOS) 1 else 0,
+                                        onSelect = { idx ->
+                                            viewModel.selectTab(
+                                                if (idx == 0) WorkspaceTab.IMAGES else WorkspaceTab.VIDEOS
+                                            )
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                Box(modifier = Modifier.weight(1f)) {
+                                    if (uiState.currentTab == WorkspaceTab.IMAGES) {
+                                        ImageStudioScreen(
+                                            uiState = uiState,
+                                            providers = providers,
+                                            models = models,
+                                            generatedImages = generatedImages,
+                                            onSelectProviderAndModel = viewModel::selectImageProviderAndModel,
+                                            onPromptChange = viewModel::updateImagePrompt,
+                                            onNegativePromptChange = viewModel::updateImageNegativePrompt,
+                                            onSelectAspectRatio = viewModel::selectImageAspectRatio,
+                                            onUpdateCount = viewModel::updateImageCount,
+                                            onUpdateSeedText = viewModel::updateImageSeedText,
+                                            onRandomizeSeed = viewModel::randomizeImageSeed,
+                                            onSelectStylePreset = viewModel::selectImageStylePreset,
+                                            onUpdateGuidanceScale = viewModel::updateImageGuidanceScale,
+                                            onUpdateSteps = viewModel::updateImageSteps,
+                                            onUpdateQuality = viewModel::updateImageQuality,
+                                            onAttachSourceImage = viewModel::attachImageToImageSource,
+                                            onUpdateStrength = viewModel::updateImageStrength,
+                                            onGenerateImage = viewModel::generateStudioImage,
+                                            onInspectImage = viewModel::setInspectingImage,
+                                            onReuseSettings = viewModel::reuseImageSettings,
+                                            onToggleFavoriteImage = viewModel::toggleFavoriteGeneratedImage,
+                                            onDeleteImage = viewModel::deleteGeneratedImage,
+                                            onDownloadImage = viewModel::downloadGeneratedImageToDevice,
+                                            onAddManualModel = { provId, modId ->
+                                                viewModel.addManualModel(provId, modId, false)
+                                            },
+                                            onApproveCleartextHostFromError = { host ->
+                                                viewModel.approveCleartextHostManually(host)
+                                                viewModel.dismissError()
+                                            },
+                                            onDismissError = viewModel::dismissError,
+                                            onOpenProviderSettings = {
+                                                moreSubTab = 1
+                                                viewModel.selectTab(WorkspaceTab.SETTINGS)
+                                            }
+                                        )
+                                    } else {
+                                        VideoStudioScreen(
+                                            uiState = uiState,
+                                            providers = providers,
+                                            models = models,
+                                            videoJobs = videoJobs,
+                                            onSelectProviderAndModel = viewModel::selectVideoProviderAndModel,
+                                            onPromptChange = viewModel::updateVideoPrompt,
+                                            onNegativePromptChange = viewModel::updateVideoNegativePrompt,
+                                            onSelectAspectRatio = viewModel::selectVideoAspectRatio,
+                                            onSelectResolution = viewModel::selectVideoResolution,
+                                            onSelectDuration = viewModel::selectVideoDuration,
+                                            onSelectCameraMotion = viewModel::selectVideoCameraMotion,
+                                            onAttachSourceImage = viewModel::attachVideoSourceImage,
+                                            onSubmitVideoJob = viewModel::submitStudioVideoJob,
+                                            onPollJobNow = viewModel::pollVideoJobNow,
+                                            onCancelJob = viewModel::cancelVideoJob,
+                                            onInspectJob = viewModel::setInspectingVideoJob,
+                                            onReuseSettings = viewModel::reuseVideoSettings,
+                                            onToggleFavoriteJob = viewModel::toggleFavoriteVideoJob,
+                                            onDeleteJob = viewModel::deleteVideoJob,
+                                            onDownloadJob = viewModel::downloadVideoJobToDevice,
+                                            onAddManualModel = { provId, modId ->
+                                                viewModel.addManualModel(provId, modId, false)
+                                            },
+                                            onApproveCleartextHostFromError = { host ->
+                                                viewModel.approveCleartextHostManually(host)
+                                                viewModel.dismissError()
+                                            },
+                                            onDismissError = viewModel::dismissError,
+                                            onPublishToYouTube = viewModel::openYouTubePublishDialog
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        WorkspaceTab.AUTOPILOT -> {
+                            OmniAutopilotScreen(
+                                agentState = agentState,
+                                studioUiState = uiState,
+                                activeProviderName = activeProvider?.displayName ?: "OmniRoute",
+                                activeModelName = (activeModelDescriptor?.displayName ?: activeConversation?.modelId ?: "gpt-4o").substringAfterLast("/"),
+                                skills = skills,
+                                mcpTools = mcpTools,
+                                mcpServers = mcpServers,
+                                maxToolIterations = activeConversation?.maxToolIterations ?: 4,
+                                previewParsedActions = viewModel::previewAgentActions,
+                                onCommandInputChange = viewModel::updateAgentCommandInput,
+                                onExecuteCommand = { cmd ->
+                                    viewModel.executeAgentCommand(cmd, providersViewModel)
+                                },
+                                onToggleDaemon = { run ->
+                                    if (run) viewModel.startLocalhostOmniRoute() else viewModel.stopLocalhostOmniRoute()
+                                },
+                                onToggleSkill = viewModel::toggleSkillGloballyEnabled,
+                                onToggleMcpTool = viewModel::toggleMcpToolEnabled,
+                                onSetMaxToolIterations = viewModel::setConversationMaxToolIterations,
+                                onToggleLlmPlanner = viewModel::setAgentUseLlmPlanner,
+                                onSetSafetyRiskyPrompt = { alwaysAsk ->
+                                    viewModel.setAllServersApprovalMode(
+                                        if (alwaysAsk) McpApprovalMode.ASK_EVERY_TIME else McpApprovalMode.ALWAYS_ALLOW_READ_ONLY
+                                    )
+                                },
+                                onUndoLastCommand = viewModel::undoLastAgentCommand,
+                                onClearHistory = viewModel::clearAgentHistory
+                            )
+                        }
+
+                        WorkspaceTab.INTEGRATIONS -> {
+                            IntegrationsWorkspaceScreen(
+                                uiState = uiState,
+                                skills = skills,
+                                mcpServers = mcpServers,
+                                mcpTools = mcpTools,
+                                toolCallLogs = toolCallLogs,
+                                integrationLogs = integrationLogs,
+                                onSaveSkillMarkdown = viewModel::saveSkillFromMarkdown,
+                                onToggleSkillEnabled = viewModel::toggleSkillGloballyEnabled,
+                                onDeleteSkill = viewModel::deleteSkill,
+                                onImportSkillFromUrl = viewModel::importSkillFromUrl,
+                                onImportSkillFromUri = viewModel::importSkillFromUri,
+                                onSaveMcpServer = viewModel::saveMcpServer,
+                                onToggleMcpServerEnabled = viewModel::toggleMcpServerEnabled,
+                                onUpdateMcpServerApprovalMode = viewModel::updateMcpServerApprovalMode,
+                                onClearMcpServerToken = viewModel::clearMcpServerToken,
+                                onDeleteMcpServer = viewModel::deleteMcpServer,
+                                onTestAndDiscoverMcpServer = viewModel::testAndDiscoverMcpServer,
+                                onToggleMcpToolEnabled = viewModel::toggleMcpToolEnabled,
+                                onClearToolCallLogs = viewModel::clearToolCallLogs,
+                                onSaveGitHubPat = viewModel::saveGitHubPat,
+                                onClearGitHubPat = viewModel::clearGitHubPat,
+                                onVerifyGitHub = viewModel::verifyAndFetchGitHubRepos,
+                                onOpenQuickGitHubGist = {
+                                    viewModel.openGitHubPushForContent(
+                                        title = "Runway Workspace Note",
+                                        suggestedFileName = "runway-note.md",
+                                        content = "# Runway Note\n\nCreated manually from Connect."
+                                    )
+                                },
+                                onSaveYouTubeCredentials = viewModel::saveYouTubeOAuthCredentials,
+                                onClearYouTubeCredentials = viewModel::clearYouTubeCredentials,
+                                onRegeneratePkce = viewModel::regenerateYouTubePkceChallenge,
+                                onExchangePkceCode = viewModel::exchangeYouTubePkceAuthCode,
+                                onVerifyYouTubeChannel = viewModel::verifyYouTubeChannelNow,
+                                onClearIntegrationLogs = viewModel::clearIntegrationLogs,
+                                onOpenSafetyApprovalSheet = { viewModel.setShowSafetyApprovalSheet(true) },
+                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                            )
+                        }
+
+                        WorkspaceTab.USAGE, WorkspaceTab.SETTINGS -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background)
+                            ) {
+                                // Segmented Control (Usage | Keys | Settings) inside the More tab
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                ) {
+                                    MinimalSegmentedControl(
+                                        options = listOf("Usage", "Keys", "Settings"),
+                                        selectedIndex = moreSubTab,
+                                        onSelect = { idx ->
+                                            moreSubTab = idx
+                                            if (idx == 0) {
+                                                viewModel.selectTab(WorkspaceTab.USAGE)
+                                            } else {
+                                                viewModel.selectTab(WorkspaceTab.SETTINGS)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                Box(modifier = Modifier.weight(1f)) {
+                                    when (moreSubTab) {
+                                        0 -> {
+                                            UsageAnalyticsScreen(
+                                                usageRecords = usageRecords,
+                                                providers = providers,
+                                                latencySamples = uiState.latencyBenchmarkHistory,
+                                                fastestProvider = uiState.fastestProviderRank,
+                                                speedRanks = uiState.speedRanks,
+                                                isProbingLatency = uiState.isProbingLatency,
+                                                autoProbeIntervalSeconds = uiState.autoProbeIntervalSeconds,
+                                                spendCurrency = uiState.spendCurrency,
+                                                usdToInrRate = uiState.usdToInrRate,
+                                                onRunProbe = viewModel::runLatencyBenchmarkProbe,
+                                                onSetAutoProbeInterval = viewModel::setAutoProbeIntervalSeconds,
+                                                onClearLatencyHistory = viewModel::clearLatencyHistory,
+                                                onSelectFastestModel = { provId, modId ->
+                                                    viewModel.switchActiveConversationModel(provId, modId)
+                                                    viewModel.selectTab(WorkspaceTab.CHAT)
+                                                },
+                                                onClearUsage = viewModel::clearUsageHistory,
+                                                onOpenPromptLibrary = { viewModel.setShowPromptLibrarySheet(true) },
+                                                onSetSpendCurrency = viewModel::setSpendCurrency
+                                            )
+                                        }
+                                        1 -> {
+                                            if (providersViewModel != null && providersUiState != null) {
+                                                ProvidersScreen(
+                                                    uiState = providersUiState,
+                                                    viewModel = providersViewModel
+                                                )
+                                            } else {
+                                                SettingsWorkspaceScreen(
+                                                    uiState = uiState,
+                                                    providers = providers,
+                                                    models = models,
+                                                    diagnosticEntries = diagnosticEntries,
+                                                    onClearDiagnostics = viewModel::clearDiagnostics,
+                                                    onRunOmniRouteCleanTerminal = viewModel::runOmniRouteCleanTerminal,
+                                                    onSelectDefaultChatModel = { prov, modId ->
+                                                        viewModel.switchActiveConversationModel(prov.id, modId)
+                                                    },
+                                                    onSaveProvider = viewModel::saveProviderInstance,
+                                                    onDuplicateProvider = viewModel::duplicateProviderInstance,
+                                                    onSaveProviderApiKeyOnly = viewModel::saveProviderApiKeyOnly,
+                                                    onClearProviderApiKey = viewModel::clearProviderApiKey,
+                                                    onUpdateProviderBaseUrl = viewModel::updateProviderBaseUrl,
+                                                    onToggleProviderEnabled = viewModel::toggleProviderEnabled,
+                                                    onUpdateProviderCapabilities = viewModel::updateProviderCapabilities,
+                                                    onDeleteProvider = viewModel::deleteProviderInstance,
+                                                    onSetDefaultForFeature = viewModel::setDefaultProviderForFeature,
+                                                    onTestConnectionOnly = viewModel::testProviderConnectionOnly,
+                                                    onTestAndFetchModels = viewModel::testAndFetchModels,
+                                                    onAddManualModel = viewModel::addManualModel,
+                                                    onToggleFavoriteModel = viewModel::toggleFavoriteModel,
+                                                    onApproveCleartextHostManually = viewModel::approveCleartextHostManually,
+                                                    onRevokeCleartextHost = viewModel::revokeCleartextHost,
+                                                    onSetThemeMode = viewModel::setThemeMode,
+                                                    onSetDynamicColor = viewModel::setDynamicColor,
+                                                    onSetBiometricGate = viewModel::setBiometricGate,
+                                                    onSetEnterToSend = viewModel::setEnterToSend,
+                                                    onSetSpendCurrency = viewModel::setSpendCurrency,
+                                                    onOpenOnboardingSheet = { viewModel.setShowOnboardingSheet(true) },
+                                                    onExportSettings = viewModel::prepareSettingsExport,
+                                                    onImportSettings = viewModel::importSettingsJson,
+                                                    onClearAllData = viewModel::clearAllWorkspaceData,
+                                                    onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                                )
+                                            }
+                                        }
+                                        else -> {
+                                            MinimalSettingsAndThemeScreen(
+                                                uiState = uiState,
+                                                onSetThemeMode = viewModel::setThemeMode,
+                                                onSetBiometricGate = viewModel::setBiometricGate,
+                                                onSetEnterToSend = viewModel::setEnterToSend,
+                                                onSetSpendCurrency = viewModel::setSpendCurrency,
+                                                onOpenOnboardingSheet = { viewModel.setShowOnboardingSheet(true) },
+                                                onExportSettings = viewModel::prepareSettingsExport,
+                                                onClearAllData = viewModel::clearAllWorkspaceData,
+                                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Slim, rounded, dark Toast at the top with a small check icon, one-line summary, and "Undo" text button.
+                    // Auto-dismisses after 4s.
+                    val toastMessage = agentState.liveStatusBanner?.takeIf { it.isNotBlank() }
+                        ?: uiState.statusToast?.takeIf { it.isNotBlank() }
+
+                    MinimalToast(
+                        message = toastMessage,
+                        onUndo = when {
+                            agentState.lastUndoSnapshot != null && !agentState.isExecuting -> viewModel::undoLastAgentCommand
+                            uiState.hasPendingDeletedConversationUndo -> viewModel::undoDeleteConversation
+                            else -> null
+                        },
+                        onDismiss = {
+                            viewModel.dismissAgentBanner()
+                            viewModel.clearToast()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .testTag("top_action_toast")
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 5-Tab Minimal Bottom Navigation Bar (icon + small label, no filled pill backgrounds).
+ * Tabs: Chat, Create, Autopilot, Connect, More
+ */
+@Composable
+private fun MinimalBottomNavBar(
+    isChatSelected: Boolean,
+    isCreateSelected: Boolean,
+    isAutopilotSelected: Boolean,
+    isConnectSelected: Boolean,
+    isMoreSelected: Boolean,
+    onSelectChat: () -> Unit,
+    onSelectCreate: () -> Unit,
+    onSelectAutopilot: () -> Unit,
+    onSelectConnect: () -> Unit,
+    onSelectMore: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .navigationBarsPadding()
+            .testTag("bottom_navigation_bar")
+    ) {
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outline
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MinimalNavTabItem(
+                label = "Chat",
+                icon = LucideIcons.Chat,
+                selected = isChatSelected,
+                onClick = onSelectChat,
+                testTag = "nav_tab_chat",
+                modifier = Modifier.weight(1f)
+            )
+            MinimalNavTabItem(
+                label = "Create",
+                icon = LucideIcons.Sparkles,
+                selected = isCreateSelected,
+                onClick = onSelectCreate,
+                testTag = "nav_tab_images",
+                modifier = Modifier.weight(1f)
+            )
+            MinimalNavTabItem(
+                label = "Autopilot",
+                icon = LucideIcons.Bot,
+                selected = isAutopilotSelected,
+                onClick = onSelectAutopilot,
+                testTag = "nav_tab_autopilot",
+                modifier = Modifier.weight(1f)
+            )
+            MinimalNavTabItem(
+                label = "Connect",
+                icon = LucideIcons.Plug,
+                selected = isConnectSelected,
+                onClick = onSelectConnect,
+                testTag = "nav_tab_integrations",
+                modifier = Modifier.weight(1f)
+            )
+            MinimalNavTabItem(
+                label = "More",
+                icon = LucideIcons.MoreHorizontal,
+                selected = isMoreSelected,
+                onClick = onSelectMore,
+                testTag = "nav_tab_settings",
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MinimalNavTabItem(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (selected) SoftIndigo else MaterialTheme.colorScheme.onSurfaceVariant
+    val interactionSource = remember { MutableInteractionSource() }
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .testTag(testTag),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
+            ),
+            color = tint,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun MinimalSideNavRail(
+    isChatSelected: Boolean,
+    isCreateSelected: Boolean,
+    isAutopilotSelected: Boolean,
+    isConnectSelected: Boolean,
+    isMoreSelected: Boolean,
+    onSelectChat: () -> Unit,
+    onSelectCreate: () -> Unit,
+    onSelectAutopilot: () -> Unit,
+    onSelectConnect: () -> Unit,
+    onSelectMore: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxHeight()) {
+        Column(
+            modifier = Modifier
+                .width(76.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(vertical = 16.dp)
+                .testTag("side_navigation_rail"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            MinimalRailItem("Chat", LucideIcons.Chat, isChatSelected, onSelectChat, "rail_tab_chat")
+            MinimalRailItem("Create", LucideIcons.Sparkles, isCreateSelected, onSelectCreate, "rail_tab_images")
+            MinimalRailItem("Autopilot", LucideIcons.Bot, isAutopilotSelected, onSelectAutopilot, "rail_tab_autopilot")
+            MinimalRailItem("Connect", LucideIcons.Plug, isConnectSelected, onSelectConnect, "rail_tab_integrations")
+            MinimalRailItem("More", LucideIcons.MoreHorizontal, isMoreSelected, onSelectMore, "rail_tab_settings")
+        }
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.outline)
+        )
+    }
+}
+
+@Composable
+private fun MinimalRailItem(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    val tint = if (selected) SoftIndigo else MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 8.dp)
+            .testTag(testTag),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = tint
+        )
+    }
+}
