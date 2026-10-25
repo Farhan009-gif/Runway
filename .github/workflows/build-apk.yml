@@ -1,3 +1,4 @@
+
 name: Build APK
 
 on:
@@ -26,19 +27,25 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Create permanent debug keystore if missing
+      - name: Restore or create permanent debug keystore
         run: |
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore \
-              -storepass android -alias androiddebugkey -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p .github/keys
+          if [ ! -f .github/keys/debug.keystore ]; then
+            if [ -f debug.keystore ]; then
+              cp debug.keystore .github/keys/debug.keystore
+            else
+              keytool -genkeypair -v -keystore .github/keys/debug.keystore \
+                -storepass android -alias androiddebugkey -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add debug.keystore
-            git commit -m "build: add permanent debug keystore"
+            git add .github/keys/debug.keystore
+            git commit -m "build: store permanent debug keystore"
             git push
           fi
+          cp .github/keys/debug.keystore debug.keystore
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
