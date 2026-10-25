@@ -199,7 +199,7 @@ data class ConversationEntity(
     val enabledSkillIdsCsv: String? = null, // null = use global enabled skills; non-null = per-conversation skill IDs
     val autoSelectSkills: Boolean = false, // true = only inject skills matching user request keywords
     val mcpToolsEnabled: Boolean = true,
-    val maxToolIterations: Int = 8,
+    val maxToolIterations: Int = 12,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

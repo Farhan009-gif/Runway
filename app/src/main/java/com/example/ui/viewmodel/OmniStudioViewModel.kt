@@ -260,7 +260,8 @@ data class OmniUiState(
     val connectorDefaultChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val connectorToolChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val confirmedWriteAlwaysTools: Set<String> = emptySet(),
-    val estimatedTokenMessageIds: Set<String> = emptySet()
+    val estimatedTokenMessageIds: Set<String> = emptySet(),
+    val conversationCostBudgets: Map<String, Double> = emptyMap()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -2904,7 +2905,22 @@ class OmniStudioViewModel(
         )
 
         val workingPayloadMessages = payloadMessages.toMutableList()
-        val maxIterations = conv.maxToolIterations.coerceIn(1, 12)
+        val maxIterationsSetting = conv.maxToolIterations
+        val isUnlimited = maxIterationsSetting >= 51
+        val maxIterations = if (isUnlimited) Int.MAX_VALUE else maxIterationsSetting.coerceIn(1, 50)
+        val chatCostBudgetUsd = _uiState.value.conversationCostBudgets[conv.id] ?: 1.00
+
+        val existingMessages = dao.getMessagesOnce(conv.id)
+        val priorCostUsd = existingMessages.filter { it.id != assistantMsgId }.sumOf { msg ->
+            if (msg.estimatedCostUsd > 0.0) msg.estimatedCostUsd
+            else com.example.data.provider.ModelPriceTable.calculateCostUsd(
+                modelId = msg.modelId,
+                inputTokens = if (msg.promptTokens > 0) msg.promptTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(msg.content),
+                outputTokens = if (msg.completionTokens > 0) msg.completionTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(msg.content)
+            )
+        }
+        var lastToolCallSignature: String? = null
+        var consecutiveIdenticalToolCalls = 0
         var iteration = 0
         val accumulatedText = StringBuilder()
         var reportedPromptTokens = 0
@@ -2912,7 +2928,11 @@ class OmniStudioViewModel(
         var streamError: NormalizedAiError? = null
 
         while (iteration < maxIterations) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) {
+                break
+            }
             iteration++
+            _uiState.update { it.copy(activeToolLoopStatus = "Tool turn $iteration") }
             val turnText = StringBuilder()
             val turnToolCalls = mutableListOf<ModelToolCallRequest>()
 
@@ -2957,7 +2977,68 @@ class OmniStudioViewModel(
                 }
             }
 
+            // Check if user tapped Stop or cancelled
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) {
+                break
+            }
+
+            // Check per-chat cost budget
+            val currentInTokens = if (reportedPromptTokens > 0) reportedPromptTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(accumulatedText.toString())
+            val currentOutTokens = if (reportedCompletionTokens > 0) reportedCompletionTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(accumulatedText.toString())
+            val currentMsgCostUsd = com.example.data.provider.ModelPriceTable.calculateCostUsd(
+                modelId = modelId,
+                inputTokens = currentInTokens,
+                outputTokens = currentOutTokens
+            )
+            val totalChatCostUsd = priorCostUsd + currentMsgCostUsd
+            if (totalChatCostUsd >= chatCostBudgetUsd) {
+                val stopMsg = "Stopped: cost budget reached"
+                if (accumulatedText.isNotEmpty() && !accumulatedText.endsWith("\n\n")) {
+                    accumulatedText.append("\n\n")
+                }
+                accumulatedText.append("[$stopMsg]")
+                dao.upsertMessage(
+                    initialAssistantMsg.copy(
+                        content = accumulatedText.toString(),
+                        isStreaming = true
+                    )
+                )
+                _uiState.update { it.copy(statusToast = stopMsg) }
+                break
+            }
+
             if (streamError != null || turnToolCalls.isEmpty() || toolDefinitions.isEmpty()) {
+                break
+            }
+
+            // Check if same tool is called with identical arguments 3 times in a row
+            var repeatedToolCallDetected = false
+            for (toolCall in turnToolCalls) {
+                val callSig = "${toolCall.toolName}:::${toolCall.argumentsJson.trim()}"
+                if (callSig == lastToolCallSignature) {
+                    consecutiveIdenticalToolCalls++
+                } else {
+                    lastToolCallSignature = callSig
+                    consecutiveIdenticalToolCalls = 1
+                }
+                if (consecutiveIdenticalToolCalls >= 3) {
+                    repeatedToolCallDetected = true
+                    break
+                }
+            }
+            if (repeatedToolCallDetected) {
+                val stopMsg = "Stopped: repeated identical tool call"
+                if (accumulatedText.isNotEmpty() && !accumulatedText.endsWith("\n\n")) {
+                    accumulatedText.append("\n\n")
+                }
+                accumulatedText.append("[$stopMsg]")
+                dao.upsertMessage(
+                    initialAssistantMsg.copy(
+                        content = accumulatedText.toString(),
+                        isStreaming = true
+                    )
+                )
+                _uiState.update { it.copy(statusToast = stopMsg) }
                 break
             }
 
@@ -2982,12 +3063,12 @@ class OmniStudioViewModel(
                             tool = synthTool,
                             callRequest = toolCall,
                             iterationIndex = iteration,
-                            maxIterations = maxIterations
+                            maxIterations = if (isUnlimited) 51 else maxIterations
                         )
                         _uiState.update {
                             it.copy(
                                 pendingToolApproval = approvalReq,
-                                activeToolLoopStatus = "Awaiting approval for JavaScript Sandbox • run_code ($iteration/$maxIterations)"
+                                activeToolLoopStatus = "Tool turn $iteration • Awaiting approval for JavaScript Sandbox"
                             )
                         }
                         val decision = approvalReq.decisionDeferred.await()
@@ -3030,7 +3111,7 @@ class OmniStudioViewModel(
 
                     _uiState.update {
                         it.copy(
-                            activeToolLoopStatus = "Running JavaScript in isolated sandbox (step $iteration/$maxIterations)…"
+                            activeToolLoopStatus = "Tool turn $iteration • Running JavaScript in isolated sandbox…"
                         )
                     }
                     val logEntry = repository.executeSandboxedCodeAndLog(
@@ -3124,12 +3205,14 @@ class OmniStudioViewModel(
                 }
 
                 val approvalMode = server.approvalModeEnum()
-                val canAutoRun = policyGate == com.example.data.mcp.ToolExecutionGate.AUTO_RUN || (
-                    toolEntity.isReadOnlyHint &&
-                        !com.example.data.mcp.ConnectorApprovalPolicy.isWriteOrDeleteTool(toolEntity) && (
-                        approvalMode == McpApprovalMode.ALWAYS_ALLOW_READ_ONLY ||
-                            (approvalMode == McpApprovalMode.ASK_ONCE_PER_CONVERSATION &&
-                                convServerKey in conversationApprovedReadOnlyServers)
+                val isWriteDeleteTool = com.example.data.mcp.ConnectorApprovalPolicy.isWriteOrDeleteTool(toolEntity) || !toolEntity.isReadOnlyHint
+                val canAutoRun = !isWriteDeleteTool && (
+                    policyGate == com.example.data.mcp.ToolExecutionGate.AUTO_RUN || (
+                        toolEntity.isReadOnlyHint && (
+                            approvalMode == McpApprovalMode.ALWAYS_ALLOW_READ_ONLY ||
+                                (approvalMode == McpApprovalMode.ASK_ONCE_PER_CONVERSATION &&
+                                    convServerKey in conversationApprovedReadOnlyServers)
+                            )
                         )
                     )
 
@@ -3140,12 +3223,12 @@ class OmniStudioViewModel(
                         tool = toolEntity,
                         callRequest = toolCall,
                         iterationIndex = iteration,
-                        maxIterations = maxIterations
+                        maxIterations = if (isUnlimited) 51 else maxIterations
                     )
                     _uiState.update {
                         it.copy(
                             pendingToolApproval = approvalReq,
-                            activeToolLoopStatus = "Awaiting approval for ${server.name} • ${toolEntity.toolName} ($iteration/$maxIterations)"
+                            activeToolLoopStatus = "Tool turn $iteration • Awaiting approval for ${server.name} • ${toolEntity.toolName}"
                         )
                     }
                     val decision = approvalReq.decisionDeferred.await()
@@ -3190,7 +3273,7 @@ class OmniStudioViewModel(
 
                 _uiState.update {
                     it.copy(
-                        activeToolLoopStatus = "Running MCP tool ${server.name}/${toolEntity.toolName} (step $iteration/$maxIterations)…"
+                        activeToolLoopStatus = "Tool turn $iteration • Running MCP tool ${server.name}/${toolEntity.toolName}…"
                     )
                 }
 
@@ -3220,6 +3303,7 @@ class OmniStudioViewModel(
             if (accumulatedText.isNotEmpty() && !accumulatedText.endsWith("\n\n")) {
                 accumulatedText.append("\n\n")
             }
+            _uiState.update { it.copy(activeToolLoopStatus = "Tool turn $iteration") }
         }
 
         _uiState.update { it.copy(activeToolLoopStatus = null, pendingToolApproval = null) }
@@ -3944,10 +4028,19 @@ class OmniStudioViewModel(
             val conv = dao.getConversationById(convId) ?: return@launch
             dao.upsertConversation(
                 conv.copy(
-                    maxToolIterations = maxIterations.coerceIn(1, 12),
+                    maxToolIterations = if (maxIterations >= 51) 51 else maxIterations.coerceIn(1, 50),
                     updatedAt = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    fun setConversationCostBudget(budget: Double) {
+        val convId = _uiState.value.activeConversationId ?: return
+        _uiState.update { state ->
+            val updated = state.conversationCostBudgets.toMutableMap()
+            updated[convId] = budget.coerceAtLeast(0.01)
+            state.copy(conversationCostBudgets = updated)
         }
     }
 

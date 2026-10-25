@@ -46,6 +46,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -104,6 +105,7 @@ import com.example.ui.components.MinimalChip
 import com.example.ui.components.MinimalSheet
 import com.example.ui.components.RunwayChatHistoryDrawerContent
 import com.example.ui.theme.CoralError
+import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.MonospaceFontFamily
 import com.example.ui.theme.SoftIndigo
 import com.example.ui.viewmodel.OmniUiState
@@ -578,6 +580,7 @@ fun ChatScreen(
     isStreaming: Boolean = false,
     activeModelId: String = "gpt-4o",
     attachedImageUri: String? = null,
+    activeToolLoopStatus: String? = null,
     onPickVisionImage: () -> Unit = {},
     onClearVisionImage: () -> Unit = {},
     onStopGeneration: () -> Unit = {},
@@ -627,6 +630,7 @@ fun ChatScreen(
                     message = msg,
                     toolLogs = emptyList(),
                     isLastAssistantMessage = false,
+                    activeToolLoopStatus = if (msg.isStreaming) activeToolLoopStatus else null,
                     onEditUserMessage = {},
                     onRegenerate = {},
                     onCopiedToast = {},
@@ -911,6 +915,7 @@ private fun MinimalChatCanvas(
                                     toolLogs = msgLogs,
                                     isLastAssistantMessage = msg.id == lastAssistantId,
                                     isTokenCountEstimated = msg.id in uiState.estimatedTokenMessageIds,
+                                    activeToolLoopStatus = if (msg.isStreaming) uiState.activeToolLoopStatus else null,
                                     onEditUserMessage = { onStartEditMessage(msg) },
                                     onRegenerate = onRegenerateLast,
                                     onCopiedToast = onCopiedToast,
@@ -997,6 +1002,40 @@ private fun MinimalChatCanvas(
             }
         }
 
+        // Active tool turn status indicator banner while loop runs
+        if (uiState.isStreaming && !uiState.activeToolLoopStatus.isNullOrBlank()) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, CyberCyan.copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .testTag("chat_active_tool_turn_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp,
+                        color = CyberCyan
+                    )
+                    Text(
+                        text = uiState.activeToolLoopStatus,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                        color = CyberCyan,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
         // Floating Minimal Input Bar
         MinimalFloatingComposerBar(
             draft = uiState.draftMessage,
@@ -1074,6 +1113,7 @@ private fun MinimalChatMessageItem(
     toolLogs: List<ToolCallLogEntity>,
     isLastAssistantMessage: Boolean,
     isTokenCountEstimated: Boolean = false,
+    activeToolLoopStatus: String? = null,
     onEditUserMessage: () -> Unit,
     onRegenerate: () -> Unit,
     onCopiedToast: (String) -> Unit,
@@ -1187,6 +1227,35 @@ private fun MinimalChatMessageItem(
                     isStreaming = message.isStreaming,
                     onCopiedToast = onCopiedToast
                 )
+
+                if (message.isStreaming && !activeToolLoopStatus.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = CyberCyan.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, CyberCyan.copy(alpha = 0.35f)),
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .testTag("message_active_tool_turn_badge")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(10.dp),
+                                strokeWidth = 1.5.dp,
+                                color = CyberCyan
+                            )
+                            Text(
+                                text = activeToolLoopStatus,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                                color = CyberCyan,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
 
                 // Per-message usage footer under every assistant reply (input tokens, output tokens, estimated cost)
                 if (!message.isStreaming && (message.content.isNotBlank() || toolLogs.isNotEmpty())) {

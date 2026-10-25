@@ -1135,6 +1135,8 @@ fun ConversationSkillsAndToolsSheet(
     onSetAutoSelectSkills: (Boolean) -> Unit,
     onSetMcpToolsEnabled: (Boolean) -> Unit,
     onSetMaxToolIterations: (Int) -> Unit,
+    costBudgetUsd: Double = 1.0,
+    onSetCostBudgetUsd: (Double) -> Unit = {},
     onToggleMcpToolEnabled: (McpToolEntity) -> Unit,
     onOpenIntegrationsHub: () -> Unit,
     onOpenSafetyApprovalSheet: () -> Unit = {},
@@ -1314,8 +1316,8 @@ fun ConversationSkillsAndToolsSheet(
                             )
                         }
 
-                        val maxIter = (conversation?.maxToolIterations ?: 8).coerceIn(1, 12)
-                        Column {
+                        val maxIter = (conversation?.maxToolIterations ?: 12).coerceIn(1, 51)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -1325,7 +1327,7 @@ fun ConversationSkillsAndToolsSheet(
                                     style = MaterialTheme.typography.labelLarge
                                 )
                                 Text(
-                                    text = "$maxIter turns",
+                                    text = if (maxIter >= 51) "Unlimited" else "$maxIter turns",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = CyberCyan
                                 )
@@ -1333,9 +1335,33 @@ fun ConversationSkillsAndToolsSheet(
                             Slider(
                                 value = maxIter.toFloat(),
                                 onValueChange = { onSetMaxToolIterations(it.toInt()) },
-                                valueRange = 1f..12f,
-                                steps = 10,
+                                valueRange = 1f..51f,
+                                steps = 49,
                                 modifier = Modifier.testTag("conv_max_tool_iterations_slider")
+                            )
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Per-Chat Cost Budget",
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                Text(
+                                    text = String.format(java.util.Locale.US, "$%.2f", costBudgetUsd),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = EmeraldConnected
+                                )
+                            }
+                            Slider(
+                                value = costBudgetUsd.toFloat().coerceIn(0.10f, 10.00f),
+                                onValueChange = { onSetCostBudgetUsd(String.format(java.util.Locale.US, "%.2f", it).toDouble()) },
+                                valueRange = 0.10f..10.00f,
+                                steps = 98,
+                                modifier = Modifier.testTag("conv_cost_budget_slider")
                             )
                         }
 
@@ -1525,7 +1551,7 @@ fun ToolCallApprovalDialog(
                     }
                     Box(modifier = Modifier.wrapContentWidth()) {
                         BadgePill(
-                            text = "Step ${request.iterationIndex}/${request.maxIterations}",
+                            text = if (request.maxIterations >= 51) "Tool turn ${request.iterationIndex} • Unlimited" else "Step ${request.iterationIndex}/${request.maxIterations}",
                             color = ElectricIndigo
                         )
                     }

@@ -441,6 +441,8 @@ private fun OmniStudioRoot(
             onSetAutoSelectSkills = viewModel::setConversationAutoSelectSkills,
             onSetMcpToolsEnabled = viewModel::setConversationMcpToolsEnabled,
             onSetMaxToolIterations = viewModel::setConversationMaxToolIterations,
+            costBudgetUsd = uiState.conversationCostBudgets[activeConversation?.id] ?: 1.0,
+            onSetCostBudgetUsd = viewModel::setConversationCostBudget,
             onToggleMcpToolEnabled = viewModel::toggleMcpToolEnabled,
             onOpenIntegrationsHub = {
                 viewModel.setShowSkillsAndToolsSheet(false)
