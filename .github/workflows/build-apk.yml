@@ -27,13 +27,18 @@ jobs:
           gradle-version: "9.3.1"
 
       # The build expects debug.keystore in the project root. Create it if it is not in the repo.
-      - name: Create debug keystore if missing
+            - name: Create permanent debug keystore if missing
         run: |
           if [ ! -f debug.keystore ]; then
             keytool -genkeypair -v -keystore debug.keystore \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add debug.keystore
+            git commit -m "build: add permanent debug keystore"
+            git push
           fi
 
       - name: Build debug APK
