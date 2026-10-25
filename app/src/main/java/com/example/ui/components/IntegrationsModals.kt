@@ -808,7 +808,7 @@ fun IntegrationsSettingsSection(
             ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -817,7 +817,8 @@ fun IntegrationsSettingsSection(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Code, contentDescription = null, tint = CyberCyan)
                             Column {
@@ -826,9 +827,13 @@ fun IntegrationsSettingsSection(
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
+                                val cleanGhSummary = uiState.gitHubProfileSummary
+                                    .replace(" (null)", "")
+                                    .replace("(null)", "")
+                                    .replace(" null", "")
                                 Text(
-                                    text = if (uiState.gitHubProfileSummary.isNotBlank()) {
-                                        uiState.gitHubProfileSummary
+                                    text = if (cleanGhSummary.isNotBlank()) {
+                                        cleanGhSummary
                                     } else if (uiState.maskedGitHubPat.isNotBlank()) {
                                         "Encrypted PAT stored (${uiState.maskedGitHubPat})"
                                     } else {
@@ -851,85 +856,83 @@ fun IntegrationsSettingsSection(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = ghTokenInput,
-                            onValueChange = { ghTokenInput = it },
-                            label = {
-                                Text(
-                                    if (uiState.maskedGitHubPat.isNotBlank()) {
-                                        "GitHub PAT (${uiState.maskedGitHubPat}) — Enter new to replace"
-                                    } else {
-                                        "GitHub Personal Access Token (ghp_... / github_pat_...)"
-                                    }
+                    OutlinedTextField(
+                        value = ghTokenInput,
+                        onValueChange = { ghTokenInput = it },
+                        label = {
+                            Text(
+                                if (uiState.maskedGitHubPat.isNotBlank()) {
+                                    "GitHub PAT (saved, enter new to replace)"
+                                } else {
+                                    "GitHub Personal Access Token (ghp_... / github_pat_...)"
+                                },
+                                maxLines = 1
+                            )
+                        },
+                        singleLine = true,
+                        visualTransformation = if (showGhToken) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showGhToken = !showGhToken }) {
+                                Icon(
+                                    imageVector = if (showGhToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle GitHub PAT visibility"
                                 )
-                            },
-                            singleLine = true,
-                            visualTransformation = if (showGhToken) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                IconButton(onClick = { showGhToken = !showGhToken }) {
-                                    Icon(
-                                        imageVector = if (showGhToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = "Toggle GitHub PAT visibility"
-                                    )
-                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("github_pat_input")
+                    )
+
+                    if (ghTokenInput.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                onSaveGitHubPat(ghTokenInput)
+                                ghTokenInput = ""
                             },
                             modifier = Modifier
-                                .weight(1f)
-                                .testTag("github_pat_input")
-                        )
-
-                        if (ghTokenInput.isNotBlank()) {
-                            Button(
-                                onClick = {
-                                    onSaveGitHubPat(ghTokenInput)
-                                    ghTokenInput = ""
-                                },
-                                modifier = Modifier
-                                    .height(48.dp)
-                                    .testTag("save_github_pat_button")
-                            ) {
-                                Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Save")
-                            }
-                        } else if (uiState.maskedGitHubPat.isNotBlank()) {
-                            OutlinedButton(
-                                onClick = onClearGitHubPat,
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text("Disconnect")
-                            }
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("save_github_pat_button")
+                        ) {
+                            Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Save")
+                        }
+                    } else if (uiState.maskedGitHubPat.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = onClearGitHubPat,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                        ) {
+                            Text("Disconnect")
                         }
                     }
 
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    OutlinedButton(
+                        onClick = { onVerifyGitHub(ghTokenInput.takeIf { it.isNotBlank() }) },
+                        enabled = !uiState.isGitHubBusy && (uiState.maskedGitHubPat.isNotBlank() || ghTokenInput.isNotBlank()),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("verify_github_button")
                     ) {
-                        OutlinedButton(
-                            onClick = { onVerifyGitHub(ghTokenInput.takeIf { it.isNotBlank() }) },
-                            enabled = !uiState.isGitHubBusy && (uiState.maskedGitHubPat.isNotBlank() || ghTokenInput.isNotBlank()),
-                            modifier = Modifier.testTag("verify_github_button")
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (uiState.isGitHubBusy) "Verifying…" else "Verify Account & Load Repos")
-                        }
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (uiState.isGitHubBusy) "Verifying…" else "Verify Account & Load Repos")
+                    }
 
-                        Button(
-                            onClick = onOpenQuickGitHubGist,
-                            modifier = Modifier.testTag("open_quick_github_gist_button")
-                        ) {
-                            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("New Gist / Repo Commit")
-                        }
+                    Button(
+                        onClick = onOpenQuickGitHubGist,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("open_quick_github_gist_button")
+                    ) {
+                        Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("New Gist / Repo Commit")
                     }
                 }
             }
@@ -942,7 +945,7 @@ fun IntegrationsSettingsSection(
             ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -951,7 +954,8 @@ fun IntegrationsSettingsSection(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = CyberCyan)
                             Column {
@@ -960,9 +964,13 @@ fun IntegrationsSettingsSection(
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
+                                val cleanYtSummary = uiState.youTubeChannelSummary
+                                    .replace(" (null)", "")
+                                    .replace("(null)", "")
+                                    .replace(" null", "")
                                 Text(
-                                    text = if (uiState.youTubeChannelSummary.isNotBlank()) {
-                                        uiState.youTubeChannelSummary
+                                    text = if (cleanYtSummary.isNotBlank()) {
+                                        cleanYtSummary
                                     } else if (uiState.maskedYouTubeAccessToken.isNotBlank()) {
                                         "Encrypted OAuth Token stored (${uiState.maskedYouTubeAccessToken})"
                                     } else {
@@ -982,57 +990,55 @@ fun IntegrationsSettingsSection(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = ytAccessTokenInput,
-                            onValueChange = { ytAccessTokenInput = it },
-                            label = {
-                                Text(
-                                    if (uiState.maskedYouTubeAccessToken.isNotBlank()) {
-                                        "YouTube OAuth Token (${uiState.maskedYouTubeAccessToken}) — Replace"
-                                    } else {
-                                        "YouTube OAuth 2.0 Access Token (ya29...)"
-                                    }
+                    OutlinedTextField(
+                        value = ytAccessTokenInput,
+                        onValueChange = { ytAccessTokenInput = it },
+                        label = {
+                            Text(
+                                if (uiState.maskedYouTubeAccessToken.isNotBlank()) {
+                                    "YouTube OAuth Token (saved, enter new to replace)"
+                                } else {
+                                    "YouTube OAuth 2.0 Access Token (ya29...)"
+                                },
+                                maxLines = 1
+                            )
+                        },
+                        singleLine = true,
+                        visualTransformation = if (showYtToken) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showYtToken = !showYtToken }) {
+                                Icon(
+                                    imageVector = if (showYtToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle YouTube token visibility"
                                 )
-                            },
-                            singleLine = true,
-                            visualTransformation = if (showYtToken) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                IconButton(onClick = { showYtToken = !showYtToken }) {
-                                    Icon(
-                                        imageVector = if (showYtToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = "Toggle YouTube token visibility"
-                                    )
-                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("youtube_access_token_input")
+                    )
+
+                    if (ytAccessTokenInput.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                onSaveYouTubeCredentials(ytClientIdInput, ytAccessTokenInput)
+                                ytAccessTokenInput = ""
                             },
                             modifier = Modifier
-                                .weight(1f)
-                                .testTag("youtube_access_token_input")
-                        )
-
-                        if (ytAccessTokenInput.isNotBlank()) {
-                            Button(
-                                onClick = {
-                                    onSaveYouTubeCredentials(ytClientIdInput, ytAccessTokenInput)
-                                    ytAccessTokenInput = ""
-                                },
-                                modifier = Modifier
-                                    .height(48.dp)
-                                    .testTag("save_youtube_token_button")
-                            ) {
-                                Text("Save")
-                            }
-                        } else if (uiState.maskedYouTubeAccessToken.isNotBlank()) {
-                            OutlinedButton(
-                                onClick = onClearYouTubeCredentials,
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text("Disconnect")
-                            }
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("save_youtube_token_button")
+                        ) {
+                            Text("Save")
+                        }
+                    } else if (uiState.maskedYouTubeAccessToken.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = onClearYouTubeCredentials,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                        ) {
+                            Text("Disconnect")
                         }
                     }
 
@@ -1129,28 +1135,26 @@ fun IntegrationsSettingsSection(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    OutlinedButton(
+                        onClick = { onVerifyYouTubeChannel(ytAccessTokenInput.takeIf { it.isNotBlank() }) },
+                        enabled = !uiState.isYouTubeBusy && (uiState.maskedYouTubeAccessToken.isNotBlank() || ytAccessTokenInput.isNotBlank()),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("verify_youtube_button")
                     ) {
-                        OutlinedButton(
-                            onClick = { onVerifyYouTubeChannel(ytAccessTokenInput.takeIf { it.isNotBlank() }) },
-                            enabled = !uiState.isYouTubeBusy && (uiState.maskedYouTubeAccessToken.isNotBlank() || ytAccessTokenInput.isNotBlank()),
-                            modifier = Modifier.testTag("verify_youtube_button")
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (uiState.isYouTubeBusy) "Checking…" else "Verify YouTube Channel")
-                        }
-
-                        Text(
-                            text = "Publish from Video Studio -> Completed Video -> Publish to YouTube",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (uiState.isYouTubeBusy) "Checking…" else "Verify YouTube Channel")
                     }
+
+                    Text(
+                        text = "Publish from Video Studio → Complete Video → Publish to YouTube",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
 

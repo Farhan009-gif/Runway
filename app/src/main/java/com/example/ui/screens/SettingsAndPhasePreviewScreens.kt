@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -620,6 +621,7 @@ fun IntegrationsWorkspaceScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
             .testTag("integrations_workspace_screen")
     ) {
         item {
@@ -659,7 +661,11 @@ fun IntegrationsWorkspaceScreen(
             ConnectServiceRow(
                 name = "GitHub",
                 subtitle = if (isGitHubConnected) {
-                    uiState.gitHubProfileSummary.ifBlank { "Connected (${uiState.gitHubRepos.size} repos)" }
+                    uiState.gitHubProfileSummary
+                        .replace(" (null)", "")
+                        .replace("(null)", "")
+                        .replace(" null", "")
+                        .ifBlank { "Connected (${uiState.gitHubRepos.size} repos)" }
                 } else {
                     "Gists & repository commits"
                 },
@@ -802,7 +808,7 @@ private fun ConnectServiceRow(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = subtitle,
+                        text = subtitle.replace(" (null)", "").replace("(null)", "").replace(" null", ""),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

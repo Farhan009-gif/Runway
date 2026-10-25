@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,6 +20,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -898,34 +902,47 @@ private fun McpServerItemCard(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
                                         Row(
+                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text(
-                                                text = tool.toolName,
-                                                style = MaterialTheme.typography.labelLarge.copy(
-                                                    fontFamily = JetBrainsMonoFontFamily
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = tool.toolName,
+                                                    style = MaterialTheme.typography.labelLarge.copy(
+                                                        fontFamily = JetBrainsMonoFontFamily
+                                                    ),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
-                                            )
-                                            BadgePill(
-                                                text = if (tool.isReadOnlyHint) "READ-ONLY" else "WRITE/DELETE",
-                                                color = if (tool.isReadOnlyHint) EmeraldConnected else CoralError
-                                            )
+                                            }
+                                            Box(modifier = Modifier.wrapContentWidth()) {
+                                                BadgePill(
+                                                    text = if (tool.isReadOnlyHint) "READ-ONLY" else "WRITE/DELETE",
+                                                    color = if (tool.isReadOnlyHint) EmeraldConnected else CoralError
+                                                )
+                                            }
                                         }
                                         if (tool.description.isNotBlank()) {
-                                            Text(
-                                                text = tool.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                            Row(modifier = Modifier.fillMaxWidth()) {
+                                                Text(
+                                                    text = tool.description,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
                                         }
                                     }
                                     Switch(
@@ -1349,33 +1366,50 @@ fun ConversationSkillsAndToolsSheet(
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
                             availableTools.forEach { tool ->
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
                                         Row(
+                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text(
-                                                text = tool.toolName,
-                                                style = MaterialTheme.typography.labelLarge.copy(
-                                                    fontFamily = JetBrainsMonoFontFamily
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = tool.toolName,
+                                                    style = MaterialTheme.typography.labelLarge.copy(
+                                                        fontFamily = JetBrainsMonoFontFamily
+                                                    ),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
-                                            )
-                                            BadgePill(
-                                                text = if (tool.isReadOnlyHint) "READ-ONLY" else "WRITE",
-                                                color = if (tool.isReadOnlyHint) EmeraldConnected else CoralError
-                                            )
+                                            }
+                                            Box(modifier = Modifier.wrapContentWidth()) {
+                                                BadgePill(
+                                                    text = if (tool.isReadOnlyHint) "READ-ONLY" else "WRITE",
+                                                    color = if (tool.isReadOnlyHint) EmeraldConnected else CoralError
+                                                )
+                                            }
                                         }
-                                        Text(
-                                            text = tool.description,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        if (tool.description.isNotBlank()) {
+                                            Row(modifier = Modifier.fillMaxWidth()) {
+                                                Text(
+                                                    text = tool.description,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
                                     }
                                     Switch(
                                         checked = tool.isEnabled,
@@ -1406,11 +1440,13 @@ fun ConversationSkillsAndToolsSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ToolCallApprovalDialog(
     request: PendingToolApprovalRequest,
     onDecision: (ToolApprovalDecision) -> Unit
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isCodeExecution = request.tool.toolName == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_TOOL_NAME ||
         request.server.id == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_SERVER_ID
     val extractedCode = remember(request.callRequest.argumentsJson, isCodeExecution) {
@@ -1422,52 +1458,77 @@ fun ToolCallApprovalDialog(
         }
     }
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = { onDecision(ToolApprovalDecision.DENY) },
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = if (isCodeExecution) Icons.Default.Code else Icons.Default.Security,
-                    contentDescription = null,
-                    tint = when {
-                        isCodeExecution -> ElectricIndigo
-                        request.tool.isReadOnlyHint -> CyberCyan
-                        else -> CoralError
-                    }
-                )
-                Text(
-                    if (isCodeExecution) "Approve Sandboxed Code Execution?" else "Approve MCP Tool Execution?"
-                )
-            }
-        },
-        text = {
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentHeight()
+            .testTag("tool_call_approval_sheet")
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight()
+        ) {
+            val maxSheetHeight = maxHeight * 0.70f
             Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxSheetHeight)
+                    .wrapContentHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isCodeExecution) Icons.Default.Code else Icons.Default.Security,
+                        contentDescription = null,
+                        tint = when {
+                            isCodeExecution -> ElectricIndigo
+                            request.tool.isReadOnlyHint -> CyberCyan
+                            else -> CoralError
+                        }
+                    )
+                    Text(
+                        text = if (isCodeExecution) "Approve Sandboxed Code Execution?" else "Approve MCP Tool Execution?",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BadgePill(
-                        text = if (isCodeExecution) "JS SANDBOX" else request.server.name,
-                        color = if (isCodeExecution) ElectricIndigo else CyberCyan
-                    )
-                    BadgePill(
-                        text = when {
-                            isCodeExecution -> "ISOLATED • NO NETWORK / FILES"
-                            request.tool.isReadOnlyHint -> "READ-ONLY TOOL"
-                            else -> "WRITE / DELETE TOOL"
-                        },
-                        color = if (isCodeExecution || request.tool.isReadOnlyHint) EmeraldConnected else CoralError
-                    )
-                    BadgePill(
-                        text = "Step ${request.iterationIndex}/${request.maxIterations}",
-                        color = ElectricIndigo
-                    )
+                    Box(modifier = Modifier.wrapContentWidth()) {
+                        BadgePill(
+                            text = if (isCodeExecution) "JS SANDBOX" else request.server.name,
+                            color = if (isCodeExecution) ElectricIndigo else CyberCyan
+                        )
+                    }
+                    Box(modifier = Modifier.wrapContentWidth()) {
+                        BadgePill(
+                            text = when {
+                                isCodeExecution -> "ISOLATED • NO NETWORK / FILES"
+                                request.tool.isReadOnlyHint -> "READ-ONLY TOOL"
+                                else -> "WRITE / DELETE TOOL"
+                            },
+                            color = if (isCodeExecution || request.tool.isReadOnlyHint) EmeraldConnected else CoralError
+                        )
+                    }
+                    Box(modifier = Modifier.wrapContentWidth()) {
+                        BadgePill(
+                            text = "Step ${request.iterationIndex}/${request.maxIterations}",
+                            color = ElectricIndigo
+                        )
+                    }
                 }
 
                 Text(
@@ -1529,20 +1590,7 @@ fun ToolCallApprovalDialog(
                         )
                     }
                 }
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (isCodeExecution || request.tool.isReadOnlyHint) {
-                    OutlinedButton(
-                        onClick = { onDecision(ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY) },
-                        modifier = Modifier.testTag("approve_tool_conversation_button")
-                    ) {
-                        Text(
-                            if (isCodeExecution) "Always allow for this chat" else "Allow Read-Only for Thread"
-                        )
-                    }
-                }
+
                 Button(
                     onClick = { onDecision(ToolApprovalDecision.APPROVE_ONCE) },
                     colors = ButtonDefaults.buttonColors(
@@ -1552,7 +1600,10 @@ fun ToolCallApprovalDialog(
                             else -> CoralError
                         }
                     ),
-                    modifier = Modifier.testTag("approve_tool_once_button")
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("approve_tool_once_button")
                 ) {
                     Text(
                         text = when {
@@ -1560,20 +1611,52 @@ fun ToolCallApprovalDialog(
                             request.tool.isReadOnlyHint -> "Approve & Run"
                             else -> "Confirm Write/Delete"
                         },
+                        maxLines = 1,
+                        softWrap = false,
                         color = if (isCodeExecution) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.scrim
                     )
                 }
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = { onDecision(ToolApprovalDecision.DENY) },
-                modifier = Modifier.testTag("deny_tool_call_button")
-            ) {
-                Text("Deny", color = CoralError)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = { onDecision(ToolApprovalDecision.DENY) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("deny_tool_call_button")
+                    ) {
+                        Text(
+                            text = "Deny",
+                            color = CoralError,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { onDecision(ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY) },
+                        enabled = isCodeExecution || request.tool.isReadOnlyHint,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("approve_tool_conversation_button")
+                    ) {
+                        Text(
+                            text = if (isCodeExecution) "Always allow for this chat" else "Allow Read-Only for Thread",
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
             }
         }
-    )
+    }
 }
 
 @Composable

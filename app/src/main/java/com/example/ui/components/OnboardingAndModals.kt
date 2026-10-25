@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Terminal
@@ -775,12 +776,14 @@ fun BadgePill(
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(50),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-        modifier = modifier
+        modifier = modifier.wrapContentWidth()
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
         )
     }
