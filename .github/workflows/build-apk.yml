@@ -6,9 +6,6 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,25 +24,12 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Restore or create permanent debug keystore
+      - name: Restore signing key from secret
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
-          mkdir -p .github/keys
-          if [ ! -f .github/keys/debug.keystore ]; then
-            if [ -f debug.keystore ]; then
-              cp debug.keystore .github/keys/debug.keystore
-            else
-              keytool -genkeypair -v -keystore .github/keys/debug.keystore \
-                -storepass android -alias androiddebugkey -keypass android \
-                -keyalg RSA -keysize 2048 -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add .github/keys/debug.keystore
-            git commit -m "build: store permanent debug keystore"
-            git push
-          fi
-          cp .github/keys/debug.keystore debug.keystore
+          if [ -z "$DEBUG_KEYSTORE_B64" ]; then echo "Missing DEBUG_KEYSTORE_B64 secret"; exit 1; fi
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > debug.keystore
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
