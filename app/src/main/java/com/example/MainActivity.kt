@@ -77,6 +77,7 @@ import com.example.ui.screens.ConnectorsScreen
 import com.example.ui.screens.ImageStudioScreen
 import com.example.ui.screens.IntegrationsWorkspaceScreen
 import com.example.ui.screens.MinimalSettingsAndThemeScreen
+import com.example.ui.screens.PersistentMediaGalleryScreen
 import com.example.ui.screens.ProvidersScreen
 import com.example.ui.screens.SettingsWorkspaceScreen
 import com.example.ui.screens.VideoStudioScreen
@@ -280,6 +281,8 @@ private fun OmniStudioRoot(
 ) {
     // Sub-tab inside More: 0 = Usage, 1 = Keys, 2 = Settings & Theme
     var moreSubTab by rememberSaveable { mutableIntStateOf(1) }
+    // Persistent Media Gallery mode inside Create tab (Images | Videos | Gallery)
+    var showPersistentGallery by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
 
     // Sync More sub-tab when navigated via ViewModel or Agent
     LaunchedEffect(uiState.currentTab) {
@@ -710,95 +713,145 @@ private fun OmniStudioRoot(
                                     .fillMaxSize()
                                     .background(MaterialTheme.colorScheme.background)
                             ) {
-                                // Segmented Control (Images | Videos) inside the Create screen
+                                // Segmented Control (Images | Videos | Gallery) inside the Create screen
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 16.dp, vertical = 10.dp)
                                 ) {
                                     MinimalSegmentedControl(
-                                        options = listOf("Images", "Videos"),
-                                        selectedIndex = if (uiState.currentTab == WorkspaceTab.VIDEOS) 1 else 0,
+                                        options = listOf("Images", "Videos", "Gallery"),
+                                        selectedIndex = when {
+                                            showPersistentGallery -> 2
+                                            uiState.currentTab == WorkspaceTab.VIDEOS -> 1
+                                            else -> 0
+                                        },
                                         onSelect = { idx ->
-                                            viewModel.selectTab(
-                                                if (idx == 0) WorkspaceTab.IMAGES else WorkspaceTab.VIDEOS
-                                            )
+                                            when (idx) {
+                                                0 -> {
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.IMAGES)
+                                                }
+                                                1 -> {
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.VIDEOS)
+                                                }
+                                                2 -> {
+                                                    showPersistentGallery = true
+                                                }
+                                            }
                                         },
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
 
                                 Box(modifier = Modifier.weight(1f)) {
-                                    if (uiState.currentTab == WorkspaceTab.IMAGES) {
-                                        ImageStudioScreen(
-                                            uiState = uiState,
-                                            providers = providers,
-                                            models = models,
-                                            generatedImages = generatedImages,
-                                            onSelectProviderAndModel = viewModel::selectImageProviderAndModel,
-                                            onPromptChange = viewModel::updateImagePrompt,
-                                            onNegativePromptChange = viewModel::updateImageNegativePrompt,
-                                            onSelectAspectRatio = viewModel::selectImageAspectRatio,
-                                            onUpdateCount = viewModel::updateImageCount,
-                                            onUpdateSeedText = viewModel::updateImageSeedText,
-                                            onRandomizeSeed = viewModel::randomizeImageSeed,
-                                            onSelectStylePreset = viewModel::selectImageStylePreset,
-                                            onUpdateGuidanceScale = viewModel::updateImageGuidanceScale,
-                                            onUpdateSteps = viewModel::updateImageSteps,
-                                            onUpdateQuality = viewModel::updateImageQuality,
-                                            onAttachSourceImage = viewModel::attachImageToImageSource,
-                                            onUpdateStrength = viewModel::updateImageStrength,
-                                            onGenerateImage = viewModel::generateStudioImage,
-                                            onInspectImage = viewModel::setInspectingImage,
-                                            onReuseSettings = viewModel::reuseImageSettings,
-                                            onToggleFavoriteImage = viewModel::toggleFavoriteGeneratedImage,
-                                            onDeleteImage = viewModel::deleteGeneratedImage,
-                                            onDownloadImage = viewModel::downloadGeneratedImageToDevice,
-                                            onAddManualModel = { provId, modId ->
-                                                viewModel.addManualModel(provId, modId, false)
-                                            },
-                                            onApproveCleartextHostFromError = { host ->
-                                                viewModel.approveCleartextHostManually(host)
-                                                viewModel.dismissError()
-                                            },
-                                            onDismissError = viewModel::dismissError,
-                                            onOpenProviderSettings = {
-                                                moreSubTab = 1
-                                                viewModel.selectTab(WorkspaceTab.SETTINGS)
-                                            }
-                                        )
-                                    } else {
-                                        VideoStudioScreen(
-                                            uiState = uiState,
-                                            providers = providers,
-                                            models = models,
-                                            videoJobs = videoJobs,
-                                            onSelectProviderAndModel = viewModel::selectVideoProviderAndModel,
-                                            onPromptChange = viewModel::updateVideoPrompt,
-                                            onNegativePromptChange = viewModel::updateVideoNegativePrompt,
-                                            onSelectAspectRatio = viewModel::selectVideoAspectRatio,
-                                            onSelectResolution = viewModel::selectVideoResolution,
-                                            onSelectDuration = viewModel::selectVideoDuration,
-                                            onSelectCameraMotion = viewModel::selectVideoCameraMotion,
-                                            onAttachSourceImage = viewModel::attachVideoSourceImage,
-                                            onSubmitVideoJob = viewModel::submitStudioVideoJob,
-                                            onPollJobNow = viewModel::pollVideoJobNow,
-                                            onCancelJob = viewModel::cancelVideoJob,
-                                            onInspectJob = viewModel::setInspectingVideoJob,
-                                            onReuseSettings = viewModel::reuseVideoSettings,
-                                            onToggleFavoriteJob = viewModel::toggleFavoriteVideoJob,
-                                            onDeleteJob = viewModel::deleteVideoJob,
-                                            onDownloadJob = viewModel::downloadVideoJobToDevice,
-                                            onAddManualModel = { provId, modId ->
-                                                viewModel.addManualModel(provId, modId, false)
-                                            },
-                                            onApproveCleartextHostFromError = { host ->
-                                                viewModel.approveCleartextHostManually(host)
-                                                viewModel.dismissError()
-                                            },
-                                            onDismissError = viewModel::dismissError,
-                                            onPublishToYouTube = viewModel::openYouTubePublishDialog
-                                        )
+                                    when {
+                                        showPersistentGallery -> {
+                                            PersistentMediaGalleryScreen(
+                                                generatedImages = generatedImages,
+                                                videoJobs = videoJobs,
+                                                onReuseImageSettings = { image ->
+                                                    viewModel.reuseImageSettings(image)
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.IMAGES)
+                                                },
+                                                onReuseVideoSettings = { job ->
+                                                    viewModel.reuseVideoSettings(job)
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.VIDEOS)
+                                                },
+                                                onUseImageForImg2Img = { uri ->
+                                                    viewModel.attachImageToImageSource(uri)
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.IMAGES)
+                                                },
+                                                onUseImageForVideoStartFrame = { uri ->
+                                                    viewModel.attachVideoSourceImage(uri)
+                                                    showPersistentGallery = false
+                                                    viewModel.selectTab(WorkspaceTab.VIDEOS)
+                                                },
+                                                onToggleFavoriteImage = viewModel::toggleFavoriteGeneratedImage,
+                                                onToggleFavoriteVideo = viewModel::toggleFavoriteVideoJob,
+                                                onDownloadImage = viewModel::downloadGeneratedImageToDevice,
+                                                onDownloadVideo = viewModel::downloadVideoJobToDevice,
+                                                onDeleteImage = viewModel::deleteGeneratedImage,
+                                                onDeleteVideo = viewModel::deleteVideoJob,
+                                                onInspectVideoInPlayer = viewModel::setInspectingVideoJob
+                                            )
+                                        }
+                                        uiState.currentTab == WorkspaceTab.IMAGES -> {
+                                            ImageStudioScreen(
+                                                uiState = uiState,
+                                                providers = providers,
+                                                models = models,
+                                                generatedImages = generatedImages,
+                                                onSelectProviderAndModel = viewModel::selectImageProviderAndModel,
+                                                onPromptChange = viewModel::updateImagePrompt,
+                                                onNegativePromptChange = viewModel::updateImageNegativePrompt,
+                                                onSelectAspectRatio = viewModel::selectImageAspectRatio,
+                                                onUpdateCount = viewModel::updateImageCount,
+                                                onUpdateSeedText = viewModel::updateImageSeedText,
+                                                onRandomizeSeed = viewModel::randomizeImageSeed,
+                                                onSelectStylePreset = viewModel::selectImageStylePreset,
+                                                onUpdateGuidanceScale = viewModel::updateImageGuidanceScale,
+                                                onUpdateSteps = viewModel::updateImageSteps,
+                                                onUpdateQuality = viewModel::updateImageQuality,
+                                                onAttachSourceImage = viewModel::attachImageToImageSource,
+                                                onUpdateStrength = viewModel::updateImageStrength,
+                                                onGenerateImage = viewModel::generateStudioImage,
+                                                onInspectImage = viewModel::setInspectingImage,
+                                                onReuseSettings = viewModel::reuseImageSettings,
+                                                onToggleFavoriteImage = viewModel::toggleFavoriteGeneratedImage,
+                                                onDeleteImage = viewModel::deleteGeneratedImage,
+                                                onDownloadImage = viewModel::downloadGeneratedImageToDevice,
+                                                onAddManualModel = { provId, modId ->
+                                                    viewModel.addManualModel(provId, modId, false)
+                                                },
+                                                onApproveCleartextHostFromError = { host ->
+                                                    viewModel.approveCleartextHostManually(host)
+                                                    viewModel.dismissError()
+                                                },
+                                                onDismissError = viewModel::dismissError,
+                                                onOpenProviderSettings = {
+                                                    moreSubTab = 1
+                                                    viewModel.selectTab(WorkspaceTab.SETTINGS)
+                                                }
+                                            )
+                                        }
+                                        else -> {
+                                            VideoStudioScreen(
+                                                uiState = uiState,
+                                                providers = providers,
+                                                models = models,
+                                                videoJobs = videoJobs,
+                                                onSelectProviderAndModel = viewModel::selectVideoProviderAndModel,
+                                                onPromptChange = viewModel::updateVideoPrompt,
+                                                onNegativePromptChange = viewModel::updateVideoNegativePrompt,
+                                                onSelectAspectRatio = viewModel::selectVideoAspectRatio,
+                                                onSelectResolution = viewModel::selectVideoResolution,
+                                                onSelectDuration = viewModel::selectVideoDuration,
+                                                onSelectCameraMotion = viewModel::selectVideoCameraMotion,
+                                                onAttachSourceImage = viewModel::attachVideoSourceImage,
+                                                onSubmitVideoJob = viewModel::submitStudioVideoJob,
+                                                onPollJobNow = viewModel::pollVideoJobNow,
+                                                onCancelJob = viewModel::cancelVideoJob,
+                                                onInspectJob = viewModel::setInspectingVideoJob,
+                                                onReuseSettings = viewModel::reuseVideoSettings,
+                                                onToggleFavoriteJob = viewModel::toggleFavoriteVideoJob,
+                                                onDeleteJob = viewModel::deleteVideoJob,
+                                                onDownloadJob = viewModel::downloadVideoJobToDevice,
+                                                onAddManualModel = { provId, modId ->
+                                                    viewModel.addManualModel(provId, modId, false)
+                                                },
+                                                onApproveCleartextHostFromError = { host ->
+                                                    viewModel.approveCleartextHostManually(host)
+                                                    viewModel.dismissError()
+                                                },
+                                                onDismissError = viewModel::dismissError,
+                                                onPublishToYouTube = viewModel::openYouTubePublishDialog
+                                            )
+                                        }
                                     }
                                 }
                             }

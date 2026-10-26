@@ -192,6 +192,10 @@ fun ImageStudioScreen(
             onUpscale = {
                 onGenerateImage(inspected)
             },
+            onUseAsImg2ImgReference = {
+                onAttachSourceImage(inspected.imageUri)
+                onInspectImage(null)
+            },
             onToggleFavorite = { onToggleFavoriteImage(inspected) },
             onDelete = { onDeleteImage(inspected) }
         )
@@ -407,7 +411,7 @@ fun ImageStudioScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Reference image", style = MaterialTheme.typography.labelSmall)
+                                    Text("Reference image (img2img)", style = MaterialTheme.typography.labelSmall)
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         if (!uiState.imageSourceUri.isNullOrBlank()) {
                                             MinimalChip(
@@ -429,6 +433,23 @@ fun ImageStudioScreen(
                                         )
                                     }
                                 }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Img2Img Strength", style = MaterialTheme.typography.labelSmall)
+                                    Text(
+                                        String.format(Locale.US, "%.2f", uiState.imageStrength),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = SoftIndigo
+                                    )
+                                }
+                                Slider(
+                                    value = uiState.imageStrength.coerceIn(0.05f, 0.95f),
+                                    onValueChange = onUpdateStrength,
+                                    valueRange = 0.05f..0.95f
+                                )
                             }
                         }
                     }
@@ -438,7 +459,7 @@ fun ImageStudioScreen(
                         horizontalArrangement = Arrangement.End
                     ) {
                         MinimalButton(
-                            text = if (uiState.isGeneratingImage) "Generating..." else "Generate",
+                            text = if (uiState.isGeneratingImage) "Generating..." else if (!uiState.imageSourceUri.isNullOrBlank()) "Generate (Img2Img)" else "Generate",
                             onClick = { onGenerateImage(null) },
                             enabled = uiState.imagePrompt.isNotBlank() && !uiState.isGeneratingImage,
                             icon = LucideIcons.Sparkles,
@@ -449,6 +470,30 @@ fun ImageStudioScreen(
                     }
                 }
             }
+        }
+
+        // 3b. 12-Pillar AI Image Generation, Post-Processing & Img2Img Suite
+        item {
+            com.example.ui.components.ImageProductionSuiteSection(
+                currentPrompt = uiState.imagePrompt,
+                attachedSourceImageUri = uiState.imageSourceUri,
+                currentImg2ImgStrength = uiState.imageStrength,
+                recentGeneratedImages = generatedImages,
+                onPickReferenceImageFromDevice = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                onAttachSourceImageUri = onAttachSourceImage,
+                onUpdateImg2ImgStrength = onUpdateStrength,
+                onApplyPromptAndSettings = { synthPrompt, negPrompt, aspectRatio, sizeLabel, stylePreset, strength ->
+                    onPromptChange(synthPrompt)
+                    onNegativePromptChange(negPrompt)
+                    onSelectAspectRatio(aspectRatio, sizeLabel)
+                    onSelectStylePreset(stylePreset)
+                    onUpdateStrength(strength)
+                }
+            )
         }
 
         // 4. Results Grid with 2 Columns and No Borders
@@ -518,6 +563,7 @@ private fun ImageInspectorDialog(
     onCopyPrompt: () -> Unit,
     onReuseSettings: () -> Unit,
     onUpscale: () -> Unit,
+    onUseAsImg2ImgReference: () -> Unit = {},
     onToggleFavorite: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -606,6 +652,13 @@ private fun ImageInspectorDialog(
                         icon = LucideIcons.Download,
                         filled = true,
                         testTag = "inspector_download_button"
+                    )
+                    MinimalButton(
+                        text = "Use for Img2Img",
+                        onClick = onUseAsImg2ImgReference,
+                        icon = LucideIcons.Image,
+                        filled = false,
+                        testTag = "inspector_use_img2img_button"
                     )
                     MinimalButton(
                         text = "Copy Prompt",
