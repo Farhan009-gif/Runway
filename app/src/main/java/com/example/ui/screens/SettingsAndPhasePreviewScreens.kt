@@ -479,10 +479,29 @@ fun IntegrationsWorkspaceScreen(
     var showGitHubDialog by rememberSaveable { mutableStateOf(false) }
     var showYouTubeDialog by rememberSaveable { mutableStateOf(false) }
     var showAddMcpDialog by rememberSaveable { mutableStateOf(false) }
+    var showMcpStudioSheet by rememberSaveable { mutableStateOf(false) }
     var showAdvancedHub by rememberSaveable { mutableStateOf(false) }
 
     val isGitHubConnected = !uiState.maskedGitHubPat.isNullOrBlank()
     val isYouTubeConnected = !uiState.maskedYouTubeAccessToken.isNullOrBlank()
+
+    if (showMcpStudioSheet) {
+        com.example.ui.components.McpSystemStudioSheet(
+            onDismiss = { showMcpStudioSheet = false },
+            onPersistServerToWorkspace = { name, url, transport, authHeaderName, rawToken, approvalMode ->
+                onSaveMcpServer(
+                    null,
+                    name,
+                    url,
+                    transport,
+                    authHeaderName,
+                    rawToken,
+                    approvalMode,
+                    true
+                )
+            }
+        )
+    }
 
     if (showGitHubDialog) {
         var patInput by rememberSaveable { mutableStateOf("") }
@@ -641,6 +660,12 @@ fun IntegrationsWorkspaceScreen(
                         selected = true,
                         onClick = onOpenConnectors,
                         testTag = "connect_tab_open_connectors_chip"
+                    )
+                    MinimalChip(
+                        label = ".mcp Studio",
+                        selected = showMcpStudioSheet,
+                        onClick = { showMcpStudioSheet = true },
+                        testTag = "connect_tab_open_mcp_studio_chip"
                     )
                     MinimalChip(
                         label = "+ MCP",

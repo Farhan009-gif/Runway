@@ -429,6 +429,21 @@ fun VideoStudioScreen(
             }
         }
 
+        // 2b. 12-Pillar AI Video Production & Post-Processing Suite
+        item {
+            com.example.ui.components.VideoProductionSuiteSection(
+                currentPrompt = uiState.videoPrompt,
+                onApplyPromptAndSettings = { synthPrompt, negPrompt, aspect, res, durationSec, camera ->
+                    onPromptChange(synthPrompt)
+                    onNegativePromptChange(negPrompt)
+                    onSelectAspectRatio(aspect)
+                    onSelectResolution(res)
+                    onSelectDuration(durationSec)
+                    onSelectCameraMotion(camera)
+                }
+            )
+        }
+
         // 3. Results Grid with 2 Columns and No Borders
         if (videoJobs.isEmpty()) {
             item {

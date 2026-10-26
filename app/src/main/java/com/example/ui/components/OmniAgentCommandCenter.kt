@@ -431,6 +431,20 @@ fun OmniAutopilotScreen(
             }
         }
 
+        // 2b. Autopilot Smart Workflow Automation System (Context Recommendations, Templates, Progressive Guide, Smart Scheduler, Custom Rules, and Feedback Telemetry)
+        item {
+            AutopilotSmartWorkflowSection(
+                activeCommandText = agentState.commandInput,
+                activeProviderName = activeProviderName,
+                enabledSkillsCount = skills.count { it.isEnabled },
+                enabledMcpToolsCount = mcpTools.count { it.isEnabled },
+                onDispatchAutomationCommand = { cmd ->
+                    onCommandInputChange(cmd)
+                    triggerRun(cmd)
+                }
+            )
+        }
+
         // 3. "Live actions" list: each action shows an icon, a one-line description, the time taken (e.g. 8172ms), a status check, and an Undo button.
         item {
             MinimalSectionHeader(

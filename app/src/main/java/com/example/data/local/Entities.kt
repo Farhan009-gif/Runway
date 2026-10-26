@@ -390,7 +390,9 @@ data class IntegrationAuditLogEntity(
 
 enum class McpTransportType(val label: String) {
     STREAMABLE_HTTP("Streamable HTTP"),
-    SSE("SSE (Fallback)")
+    SSE("SSE (Fallback)"),
+    WEBSOCKET("WebSocket (WS/WSS)"),
+    GRPC("gRPC / HTTP2")
 }
 
 enum class McpApprovalMode(val label: String, val subtitle: String) {

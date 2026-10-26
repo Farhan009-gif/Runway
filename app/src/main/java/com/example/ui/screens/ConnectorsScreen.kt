@@ -1296,6 +1296,8 @@ private fun AddMcpConnectorDialog(
                         val label = when (t) {
                             McpTransportType.STREAMABLE_HTTP -> "Streamable HTTP"
                             McpTransportType.SSE -> "SSE"
+                            McpTransportType.WEBSOCKET -> "WebSocket"
+                            McpTransportType.GRPC -> "gRPC"
                         }
                         MinimalChip(
                             label = label,
