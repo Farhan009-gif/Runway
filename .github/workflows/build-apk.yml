@@ -1,6 +1,4 @@
-
 name: Build APK
-
 on:
   push:
     branches: [main, master]
@@ -24,12 +22,24 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Restore signing key from secret
+      - name: Prepare signing key
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
-          if [ -z "$DEBUG_KEYSTORE_B64" ]; then echo "Missing DEBUG_KEYSTORE_B64 secret"; exit 1; fi
-          echo "$DEBUG_KEYSTORE_B64" | base64 -d > debug.keystore
+          USED=temp
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            echo "$DEBUG_KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > debug.keystore 2>/dev/null || true
+            if keytool -list -keystore debug.keystore -storepass android >/dev/null 2>&1; then USED=secret; fi
+          fi
+          if [ "$USED" = temp ]; then
+            echo "::warning::No valid DEBUG_KEYSTORE_B64 secret, using a temporary key. This APK cannot update an app signed with a different key."
+            rm -f debug.keystore
+            keytool -genkeypair -keystore debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "Signing key: $USED"
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
