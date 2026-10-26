@@ -260,8 +260,7 @@ data class OmniUiState(
     val connectorDefaultChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val connectorToolChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val confirmedWriteAlwaysTools: Set<String> = emptySet(),
-    val estimatedTokenMessageIds: Set<String> = emptySet(),
-    val conversationCostBudgets: Map<String, Double> = emptyMap()
+    val estimatedTokenMessageIds: Set<String> = emptySet()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -2908,17 +2907,6 @@ class OmniStudioViewModel(
         val maxIterationsSetting = conv.maxToolIterations
         val isUnlimited = maxIterationsSetting >= 51
         val maxIterations = if (isUnlimited) Int.MAX_VALUE else maxIterationsSetting.coerceIn(1, 50)
-        val chatCostBudgetUsd = _uiState.value.conversationCostBudgets[conv.id] ?: 1.00
-
-        val existingMessages = dao.getMessagesOnce(conv.id)
-        val priorCostUsd = existingMessages.filter { it.id != assistantMsgId }.sumOf { msg ->
-            if (msg.estimatedCostUsd > 0.0) msg.estimatedCostUsd
-            else com.example.data.provider.ModelPriceTable.calculateCostUsd(
-                modelId = msg.modelId,
-                inputTokens = if (msg.promptTokens > 0) msg.promptTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(msg.content),
-                outputTokens = if (msg.completionTokens > 0) msg.completionTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(msg.content)
-            )
-        }
         var lastToolCallSignature: String? = null
         var consecutiveIdenticalToolCalls = 0
         var iteration = 0
@@ -2932,7 +2920,8 @@ class OmniStudioViewModel(
                 break
             }
             iteration++
-            _uiState.update { it.copy(activeToolLoopStatus = "Tool turn $iteration") }
+            val turnCounter = if (isUnlimited) "Tool turn $iteration • Unlimited" else "Step $iteration/$maxIterations"
+            _uiState.update { it.copy(activeToolLoopStatus = turnCounter) }
             val turnText = StringBuilder()
             val turnToolCalls = mutableListOf<ModelToolCallRequest>()
 
@@ -2979,31 +2968,6 @@ class OmniStudioViewModel(
 
             // Check if user tapped Stop or cancelled
             if (!kotlinx.coroutines.currentCoroutineContext().isActive) {
-                break
-            }
-
-            // Check per-chat cost budget
-            val currentInTokens = if (reportedPromptTokens > 0) reportedPromptTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(accumulatedText.toString())
-            val currentOutTokens = if (reportedCompletionTokens > 0) reportedCompletionTokens else com.example.data.provider.ModelPriceTable.estimateTokensFromText(accumulatedText.toString())
-            val currentMsgCostUsd = com.example.data.provider.ModelPriceTable.calculateCostUsd(
-                modelId = modelId,
-                inputTokens = currentInTokens,
-                outputTokens = currentOutTokens
-            )
-            val totalChatCostUsd = priorCostUsd + currentMsgCostUsd
-            if (totalChatCostUsd >= chatCostBudgetUsd) {
-                val stopMsg = "Stopped: cost budget reached"
-                if (accumulatedText.isNotEmpty() && !accumulatedText.endsWith("\n\n")) {
-                    accumulatedText.append("\n\n")
-                }
-                accumulatedText.append("[$stopMsg]")
-                dao.upsertMessage(
-                    initialAssistantMsg.copy(
-                        content = accumulatedText.toString(),
-                        isStreaming = true
-                    )
-                )
-                _uiState.update { it.copy(statusToast = stopMsg) }
                 break
             }
 
@@ -3068,7 +3032,7 @@ class OmniStudioViewModel(
                         _uiState.update {
                             it.copy(
                                 pendingToolApproval = approvalReq,
-                                activeToolLoopStatus = "Tool turn $iteration • Awaiting approval for JavaScript Sandbox"
+                                activeToolLoopStatus = "$turnCounter • Awaiting approval for JavaScript Sandbox"
                             )
                         }
                         val decision = approvalReq.decisionDeferred.await()
@@ -3111,7 +3075,7 @@ class OmniStudioViewModel(
 
                     _uiState.update {
                         it.copy(
-                            activeToolLoopStatus = "Tool turn $iteration • Running JavaScript in isolated sandbox…"
+                            activeToolLoopStatus = "$turnCounter • Running JavaScript in isolated sandbox…"
                         )
                     }
                     val logEntry = repository.executeSandboxedCodeAndLog(
@@ -3228,7 +3192,7 @@ class OmniStudioViewModel(
                     _uiState.update {
                         it.copy(
                             pendingToolApproval = approvalReq,
-                            activeToolLoopStatus = "Tool turn $iteration • Awaiting approval for ${server.name} • ${toolEntity.toolName}"
+                            activeToolLoopStatus = "$turnCounter • Awaiting approval for ${server.name} • ${toolEntity.toolName}"
                         )
                     }
                     val decision = approvalReq.decisionDeferred.await()
@@ -3273,7 +3237,7 @@ class OmniStudioViewModel(
 
                 _uiState.update {
                     it.copy(
-                        activeToolLoopStatus = "Tool turn $iteration • Running MCP tool ${server.name}/${toolEntity.toolName}…"
+                        activeToolLoopStatus = "$turnCounter • Running MCP tool ${server.name}/${toolEntity.toolName}…"
                     )
                 }
 
@@ -3303,7 +3267,7 @@ class OmniStudioViewModel(
             if (accumulatedText.isNotEmpty() && !accumulatedText.endsWith("\n\n")) {
                 accumulatedText.append("\n\n")
             }
-            _uiState.update { it.copy(activeToolLoopStatus = "Tool turn $iteration") }
+            _uiState.update { it.copy(activeToolLoopStatus = turnCounter) }
         }
 
         _uiState.update { it.copy(activeToolLoopStatus = null, pendingToolApproval = null) }
@@ -4032,15 +3996,6 @@ class OmniStudioViewModel(
                     updatedAt = System.currentTimeMillis()
                 )
             )
-        }
-    }
-
-    fun setConversationCostBudget(budget: Double) {
-        val convId = _uiState.value.activeConversationId ?: return
-        _uiState.update { state ->
-            val updated = state.conversationCostBudgets.toMutableMap()
-            updated[convId] = budget.coerceAtLeast(0.01)
-            state.copy(conversationCostBudgets = updated)
         }
     }
 

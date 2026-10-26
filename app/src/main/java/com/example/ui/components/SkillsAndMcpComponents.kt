@@ -1135,8 +1135,6 @@ fun ConversationSkillsAndToolsSheet(
     onSetAutoSelectSkills: (Boolean) -> Unit,
     onSetMcpToolsEnabled: (Boolean) -> Unit,
     onSetMaxToolIterations: (Int) -> Unit,
-    costBudgetUsd: Double = 1.0,
-    onSetCostBudgetUsd: (Double) -> Unit = {},
     onToggleMcpToolEnabled: (McpToolEntity) -> Unit,
     onOpenIntegrationsHub: () -> Unit,
     onOpenSafetyApprovalSheet: () -> Unit = {},
@@ -1341,29 +1339,7 @@ fun ConversationSkillsAndToolsSheet(
                             )
                         }
 
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "Per-Chat Cost Budget",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                                Text(
-                                    text = String.format(java.util.Locale.US, "$%.2f", costBudgetUsd),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = EmeraldConnected
-                                )
-                            }
-                            Slider(
-                                value = costBudgetUsd.toFloat().coerceIn(0.10f, 10.00f),
-                                onValueChange = { onSetCostBudgetUsd(String.format(java.util.Locale.US, "%.2f", it).toDouble()) },
-                                valueRange = 0.10f..10.00f,
-                                steps = 98,
-                                modifier = Modifier.testTag("conv_cost_budget_slider")
-                            )
-                        }
+
 
                         Button(
                             onClick = onOpenSafetyApprovalSheet,
