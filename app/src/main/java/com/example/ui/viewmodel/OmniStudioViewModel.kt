@@ -8,6 +8,7 @@ import com.example.data.integrations.GitHubRepoSummary
 import com.example.data.integrations.YouTubeIntegrationClient
 import com.example.data.local.CapabilityTag
 import com.example.data.local.ChatMediaAttachment
+import com.example.data.local.ClonedRepoEntity
 import com.example.data.local.ConversationEntity
 import com.example.data.local.GeneratedImageEntity
 import com.example.data.local.getAttachments
@@ -261,7 +262,17 @@ data class OmniUiState(
     val connectorDefaultChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val connectorToolChoices: Map<String, com.example.data.mcp.ToolApprovalChoice> = emptyMap(),
     val confirmedWriteAlwaysTools: Set<String> = emptySet(),
-    val estimatedTokenMessageIds: Set<String> = emptySet()
+    val estimatedTokenMessageIds: Set<String> = emptySet(),
+    // Git Clone Repositories & Agent Skills
+    val showGitCloneSheet: Boolean = false,
+    val isGitCloning: Boolean = false,
+    val gitCloneProgressMessage: String = "",
+    val gitCloneError: String? = null,
+    val selectedClonedRepo: ClonedRepoEntity? = null,
+    val showRepoFileBrowserSheet: Boolean = false,
+    val repoFilesList: List<String> = emptyList(),
+    val viewingRepoFilePath: String? = null,
+    val viewingRepoFileContent: String? = null
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -308,6 +319,9 @@ class OmniStudioViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val toolCallLogs: StateFlow<List<ToolCallLogEntity>> = repository.toolCallLogsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val clonedRepos: StateFlow<List<ClonedRepoEntity>> = repository.clonedReposFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Step (1): Runway Data Layer reactive StateFlows
@@ -4077,6 +4091,183 @@ class OmniStudioViewModel(
                     updatedAt = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    // --- Git Clone & Agent Skills from GitHub ---
+
+    fun setShowGitCloneSheet(show: Boolean) {
+        _uiState.update { it.copy(showGitCloneSheet = show, gitCloneError = null) }
+    }
+
+    fun cloneGitHubRepository(url: String, branch: String? = null, token: String? = null) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) {
+            _uiState.update { it.copy(gitCloneError = "Please enter a GitHub repository URL or 'owner/repo'.") }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                isGitCloning = true,
+                gitCloneProgressMessage = "Initializing clone for $cleanUrl...",
+                gitCloneError = null
+            )
+        }
+
+        viewModelScope.launch {
+            val result = repository.cloneGitHubRepo(
+                rawRepoUrl = cleanUrl,
+                branch = branch?.trim()?.takeIf { it.isNotEmpty() },
+                personalAccessToken = token?.trim()?.takeIf { it.isNotEmpty() },
+                onProgress = { msg ->
+                    _uiState.update { it.copy(gitCloneProgressMessage = msg) }
+                }
+            )
+
+            result.onSuccess { repo ->
+                _uiState.update {
+                    it.copy(
+                        isGitCloning = false,
+                        showGitCloneSheet = false,
+                        gitCloneProgressMessage = "",
+                        statusToast = "Cloned '${repo.owner}/${repo.repoName}' • ${repo.skillCount} agent skills active"
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isGitCloning = false,
+                        gitCloneError = err.message ?: "Failed to clone repository"
+                    )
+                }
+            }
+        }
+    }
+
+    fun syncClonedRepository(repoId: String, token: String? = null) {
+        _uiState.update {
+            it.copy(
+                isGitCloning = true,
+                gitCloneProgressMessage = "Syncing repository from GitHub...",
+                gitCloneError = null
+            )
+        }
+
+        viewModelScope.launch {
+            val result = repository.syncClonedRepo(
+                repoId = repoId,
+                personalAccessToken = token?.trim()?.takeIf { it.isNotEmpty() },
+                onProgress = { msg ->
+                    _uiState.update { it.copy(gitCloneProgressMessage = msg) }
+                }
+            )
+
+            result.onSuccess { repo ->
+                _uiState.update {
+                    it.copy(
+                        isGitCloning = false,
+                        gitCloneProgressMessage = "",
+                        statusToast = "Updated '${repo.owner}/${repo.repoName}' • ${repo.skillCount} skills synced"
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isGitCloning = false,
+                        gitCloneError = err.message ?: "Failed to sync repository",
+                        statusToast = "Sync failed: ${err.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteClonedRepository(repoId: String) {
+        viewModelScope.launch {
+            val success = repository.deleteClonedRepo(repoId)
+            _uiState.update {
+                it.copy(
+                    statusToast = if (success) "Repository and associated skills deleted" else "Could not delete repository",
+                    selectedClonedRepo = if (it.selectedClonedRepo?.id == repoId) null else it.selectedClonedRepo,
+                    showRepoFileBrowserSheet = if (it.selectedClonedRepo?.id == repoId) false else it.showRepoFileBrowserSheet
+                )
+            }
+        }
+    }
+
+    fun openRepoFileBrowser(repo: ClonedRepoEntity) {
+        viewModelScope.launch {
+            val files = repository.getClonedRepoFiles(repo.id)
+            _uiState.update {
+                it.copy(
+                    selectedClonedRepo = repo,
+                    showRepoFileBrowserSheet = true,
+                    repoFilesList = files,
+                    viewingRepoFilePath = null,
+                    viewingRepoFileContent = null
+                )
+            }
+        }
+    }
+
+    fun dismissRepoFileBrowser() {
+        _uiState.update {
+            it.copy(
+                showRepoFileBrowserSheet = false,
+                selectedClonedRepo = null,
+                viewingRepoFilePath = null,
+                viewingRepoFileContent = null
+            )
+        }
+    }
+
+    fun viewRepoFile(repoId: String, relativePath: String) {
+        viewModelScope.launch {
+            val content = repository.readClonedRepoFile(repoId, relativePath)
+            _uiState.update {
+                it.copy(
+                    viewingRepoFilePath = relativePath,
+                    viewingRepoFileContent = content ?: "(Unable to preview file or binary format)"
+                )
+            }
+        }
+    }
+
+    fun dismissRepoFileViewer() {
+        _uiState.update {
+            it.copy(
+                viewingRepoFilePath = null,
+                viewingRepoFileContent = null
+            )
+        }
+    }
+
+    fun activateRepoSkillsInActiveConversation(repo: ClonedRepoEntity) {
+        val convId = _uiState.value.activeConversationId ?: return
+        viewModelScope.launch {
+            val conv = dao.getConversationById(convId) ?: return@launch
+            val skillIdsFromRepo = repo.getDiscoveredSkills().map { it.id }.toSet()
+            if (skillIdsFromRepo.isEmpty()) {
+                _uiState.update { it.copy(statusToast = "No skills found in ${repo.repoName}") }
+                return@launch
+            }
+
+            val currentEnabled = conv.enabledSkillIdsCsv.orEmpty().split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toMutableSet()
+
+            currentEnabled.addAll(skillIdsFromRepo)
+            dao.upsertConversation(
+                conv.copy(
+                    enabledSkillIdsCsv = currentEnabled.joinToString(","),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            _uiState.update {
+                it.copy(statusToast = "Activated ${skillIdsFromRepo.size} skills from '${repo.repoName}' in this chat")
+            }
         }
     }
 

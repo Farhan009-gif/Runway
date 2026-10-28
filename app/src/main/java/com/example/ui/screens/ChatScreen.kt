@@ -157,6 +157,7 @@ fun ChatWorkspaceScreen(
     onOpenParameterSheet: () -> Unit,
     onOpenPromptLibrary: () -> Unit,
     onOpenSkillsAndToolsSheet: () -> Unit = {},
+    onOpenGitClone: () -> Unit = {},
     onOpenCompareTargetPicker: () -> Unit,
     onToggleCompareMode: (Boolean) -> Unit,
     onOpenOnboardingGuide: () -> Unit,
@@ -373,6 +374,16 @@ fun ChatWorkspaceScreen(
                     onOpenConnectors()
                 },
                 testTag = "tools_sheet_connectors"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.GitBranch,
+                title = "Git Clone & Repo Skills",
+                subtitle = "Clone GitHub repo and use agent skills (SKILL.md)",
+                onClick = {
+                    showToolsSheet = false
+                    onOpenGitClone()
+                },
+                testTag = "tools_sheet_git_clone"
             )
             MinimalToolRow(
                 icon = LucideIcons.Terminal,

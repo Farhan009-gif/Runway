@@ -202,8 +202,30 @@ interface OmniDao {
     @Query("DELETE FROM skills WHERE id = :id")
     suspend fun deleteSkillById(id: String)
 
+    @Query("DELETE FROM skills WHERE sourceUrl LIKE :urlPattern")
+    suspend fun deleteSkillsBySourceUrlPattern(urlPattern: String)
+
     @Query("DELETE FROM skills")
     suspend fun deleteAllSkills()
+
+    // --- Git Cloned Repositories ---
+    @Query("SELECT * FROM cloned_repos ORDER BY updatedAt DESC")
+    fun observeClonedRepos(): Flow<List<ClonedRepoEntity>>
+
+    @Query("SELECT * FROM cloned_repos ORDER BY updatedAt DESC")
+    suspend fun getClonedReposOnce(): List<ClonedRepoEntity>
+
+    @Query("SELECT * FROM cloned_repos WHERE id = :id LIMIT 1")
+    suspend fun getClonedRepoById(id: String): ClonedRepoEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertClonedRepo(repo: ClonedRepoEntity)
+
+    @Query("DELETE FROM cloned_repos WHERE id = :id")
+    suspend fun deleteClonedRepoById(id: String)
+
+    @Query("DELETE FROM cloned_repos")
+    suspend fun deleteAllClonedRepos()
 
     // --- Phase 6: Remote MCP Servers & Tools ---
     @Query("SELECT * FROM mcp_servers ORDER BY createdAt ASC")

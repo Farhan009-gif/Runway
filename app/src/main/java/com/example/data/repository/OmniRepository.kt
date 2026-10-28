@@ -15,7 +15,10 @@ import com.example.data.integrations.GitHubUserProfile
 import com.example.data.integrations.YouTubeChannelSummary
 import com.example.data.integrations.YouTubeIntegrationClient
 import com.example.data.integrations.YouTubeUploadResult
+import com.example.data.git.GitHubRepoTarget
+import com.example.data.git.GitRepoCloner
 import com.example.data.local.CapabilityTag
+import com.example.data.local.ClonedRepoEntity
 import com.example.data.local.ConversationEntity
 import com.example.data.local.GeneratedImageEntity
 import com.example.data.local.IntegrationAuditLogEntity
@@ -162,6 +165,7 @@ class OmniRepository(
     val mcpServersFlow: Flow<List<McpServerEntity>> = dao.observeMcpServers()
     val mcpToolsFlow: Flow<List<McpToolEntity>> = dao.observeMcpTools()
     val toolCallLogsFlow: Flow<List<ToolCallLogEntity>> = dao.observeToolCallLogs()
+    val clonedReposFlow: Flow<List<ClonedRepoEntity>> = dao.observeClonedRepos()
 
     // Step (1): Runway Data Layer reactive flows
     val runwayFoldersFlow: Flow<List<com.example.data.local.RunwayFolderEntity>> = dao.observeRunwayFolders()
@@ -2506,6 +2510,99 @@ class OmniRepository(
 
     suspend fun deleteSkill(skillId: String) = withContext(Dispatchers.IO) {
         dao.deleteSkillById(skillId)
+    }
+
+    // --- Git Repository Clone & Skill Extraction ---
+
+    suspend fun cloneGitHubRepo(
+        rawRepoUrl: String,
+        branch: String? = null,
+        personalAccessToken: String? = null,
+        onProgress: ((String) -> Unit)? = null
+    ): Result<ClonedRepoEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val target = GitRepoCloner.parseRepoUrl(rawRepoUrl)
+                ?: throw IllegalArgumentException("Invalid GitHub URL or repository format. Use 'owner/repo' or 'https://github.com/owner/repo'.")
+
+            val effectiveTarget = if (!branch.isNullOrBlank()) target.copy(branch = branch) else target
+
+            val effectiveToken = personalAccessToken?.trim()?.takeIf { it.isNotEmpty() }
+                ?: secretVault.getApiKey(TinkSecretVault.INTEGRATION_GITHUB_PAT_ID)
+
+            val cloneResult = GitRepoCloner.cloneOrSync(
+                context = context,
+                okHttpClient = okHttpClient,
+                target = effectiveTarget,
+                personalAccessToken = effectiveToken,
+                onProgress = onProgress
+            ).getOrThrow()
+
+            // Save cloned repo record
+            dao.upsertClonedRepo(cloneResult.repoEntity)
+
+            // Save extracted skills into workspace database
+            if (cloneResult.discoveredSkills.isNotEmpty()) {
+                dao.upsertSkills(cloneResult.discoveredSkills)
+            }
+
+            cloneResult.repoEntity
+        }
+    }
+
+    suspend fun syncClonedRepo(
+        repoId: String,
+        personalAccessToken: String? = null,
+        onProgress: ((String) -> Unit)? = null
+    ): Result<ClonedRepoEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val existing = dao.getClonedRepoById(repoId)
+                ?: throw IllegalArgumentException("Cloned repository '$repoId' not found.")
+
+            val target = GitHubRepoTarget(
+                owner = existing.owner,
+                repo = existing.repoName,
+                branch = existing.branch,
+                fullUrl = existing.repoUrl
+            )
+
+            val effectiveToken = personalAccessToken?.trim()?.takeIf { it.isNotEmpty() }
+                ?: secretVault.getApiKey(TinkSecretVault.INTEGRATION_GITHUB_PAT_ID)
+
+            val cloneResult = GitRepoCloner.cloneOrSync(
+                context = context,
+                okHttpClient = okHttpClient,
+                target = target,
+                personalAccessToken = effectiveToken,
+                onProgress = onProgress
+            ).getOrThrow()
+
+            dao.upsertClonedRepo(cloneResult.repoEntity)
+            if (cloneResult.discoveredSkills.isNotEmpty()) {
+                dao.upsertSkills(cloneResult.discoveredSkills)
+            }
+
+            cloneResult.repoEntity
+        }
+    }
+
+    suspend fun deleteClonedRepo(repoId: String): Boolean = withContext(Dispatchers.IO) {
+        val existing = dao.getClonedRepoById(repoId)
+        if (existing != null) {
+            dao.deleteSkillsBySourceUrlPattern("%github.com/${existing.owner}/${existing.repoName}%")
+            GitRepoCloner.deleteClonedRepoFiles(context, repoId)
+            dao.deleteClonedRepoById(repoId)
+            true
+        } else {
+            false
+        }
+    }
+
+    suspend fun getClonedRepoFiles(repoId: String): List<String> = withContext(Dispatchers.IO) {
+        GitRepoCloner.listRepoFiles(context, repoId)
+    }
+
+    suspend fun readClonedRepoFile(repoId: String, relativePath: String): String? = withContext(Dispatchers.IO) {
+        GitRepoCloner.readRepoFile(context, repoId, relativePath)
     }
 
     suspend fun saveMcpServerWithToken(

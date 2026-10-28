@@ -19,6 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         VideoJobEntity::class,
         IntegrationAuditLogEntity::class,
         SkillEntity::class,
+        ClonedRepoEntity::class,
         McpServerEntity::class,
         McpToolEntity::class,
         ToolCallLogEntity::class,
@@ -32,7 +33,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RunwayParameterPresetEntity::class,
         RunwayUsageLogEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class OmniDatabase : RoomDatabase() {
@@ -235,6 +236,35 @@ abstract class OmniDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `cloned_repos` (
+                        `id` TEXT NOT NULL,
+                        `owner` TEXT NOT NULL,
+                        `repoName` TEXT NOT NULL,
+                        `repoUrl` TEXT NOT NULL,
+                        `branch` TEXT NOT NULL,
+                        `defaultBranch` TEXT NOT NULL,
+                        `commitSha` TEXT,
+                        `localDirPath` TEXT NOT NULL,
+                        `fileCount` INTEGER NOT NULL,
+                        `skillCount` INTEGER NOT NULL,
+                        `discoveredSkillsJson` TEXT NOT NULL,
+                        `isPrivate` INTEGER NOT NULL,
+                        `lastSyncStatus` TEXT NOT NULL,
+                        `lastSyncMessage` TEXT NOT NULL,
+                        `clonedAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cloned_repos_owner_repoName` ON `cloned_repos` (`owner`, `repoName`)")
+            }
+        }
+
         fun getInstance(context: Context): OmniDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -242,7 +272,7 @@ abstract class OmniDatabase : RoomDatabase() {
                     OmniDatabase::class.java,
                     "omniai_studio.db"
                 )
-                    .addMigrations(MIGRATION_7_8)
+                    .addMigrations(MIGRATION_7_8, MIGRATION_8_9)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

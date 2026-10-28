@@ -129,6 +129,7 @@ class MainActivity : FragmentActivity() {
             val runwayConversationMetas by viewModel.runwayConversationMetas.collectAsStateWithLifecycle()
             val runwayAllMessageNodes by viewModel.runwayAllMessageNodes.collectAsStateWithLifecycle()
             val runwayAllDocuments by viewModel.runwayAllDocuments.collectAsStateWithLifecycle()
+            val clonedRepos by viewModel.clonedRepos.collectAsStateWithLifecycle()
 
             OmniAIStudioTheme(
                 themeMode = uiState.themeMode,
@@ -173,6 +174,7 @@ class MainActivity : FragmentActivity() {
                             runwayConversationMetas = runwayConversationMetas,
                             runwayAllMessageNodes = runwayAllMessageNodes,
                             runwayAllDocuments = runwayAllDocuments,
+                            clonedRepos = clonedRepos,
                             viewModel = viewModel,
                             providersViewModel = providersViewModel,
                             providersUiState = providersUiState,
@@ -274,6 +276,7 @@ private fun OmniStudioRoot(
     runwayConversationMetas: List<com.example.data.local.RunwayConversationMetaEntity> = emptyList(),
     runwayAllMessageNodes: List<com.example.data.local.RunwayMessageNodeEntity> = emptyList(),
     runwayAllDocuments: List<com.example.data.local.RunwayDocumentEntity> = emptyList(),
+    clonedRepos: List<com.example.data.local.ClonedRepoEntity> = emptyList(),
     viewModel: OmniStudioViewModel,
     providersViewModel: ProvidersViewModel? = null,
     providersUiState: ProvidersUiState? = null,
@@ -467,7 +470,36 @@ private fun OmniStudioRoot(
                 viewModel.setShowSkillsAndToolsSheet(false)
                 viewModel.setShowSafetyApprovalSheet(true)
             },
+            onCloneRepoFromGit = {
+                viewModel.setShowSkillsAndToolsSheet(false)
+                viewModel.setShowGitCloneSheet(true)
+            },
             onDismiss = { viewModel.setShowSkillsAndToolsSheet(false) }
+        )
+    }
+
+    if (uiState.showGitCloneSheet) {
+        com.example.ui.components.GitCloneBottomSheet(
+            isCloning = uiState.isGitCloning,
+            progressMessage = uiState.gitCloneProgressMessage,
+            errorMessage = uiState.gitCloneError,
+            defaultToken = uiState.maskedGitHubPat,
+            onClone = viewModel::cloneGitHubRepository,
+            onDismiss = { viewModel.setShowGitCloneSheet(false) }
+        )
+    }
+
+    if (uiState.showRepoFileBrowserSheet && uiState.selectedClonedRepo != null) {
+        com.example.ui.components.RepoFileBrowserBottomSheet(
+            repo = uiState.selectedClonedRepo,
+            filesList = uiState.repoFilesList,
+            viewingFilePath = uiState.viewingRepoFilePath,
+            viewingFileContent = uiState.viewingRepoFileContent,
+            onViewFile = { path ->
+                viewModel.viewRepoFile(uiState.selectedClonedRepo.id, path)
+            },
+            onBackToList = viewModel::dismissRepoFileViewer,
+            onDismiss = viewModel::dismissRepoFileBrowser
         )
     }
 
@@ -684,6 +716,7 @@ private fun OmniStudioRoot(
                                 onOpenParameterSheet = { viewModel.setShowParameterSheet(true) },
                                 onOpenPromptLibrary = { viewModel.setShowPromptLibrarySheet(true) },
                                 onOpenSkillsAndToolsSheet = { viewModel.setShowSkillsAndToolsSheet(true) },
+                                onOpenGitClone = { viewModel.setShowGitCloneSheet(true) },
                                 onOpenCompareTargetPicker = { viewModel.setShowCompareTargetSheet(true) },
                                 onToggleCompareMode = viewModel::setCompareModeEnabled,
                                 onOpenOnboardingGuide = { viewModel.setShowOnboardingSheet(true) },
@@ -982,7 +1015,13 @@ private fun OmniStudioRoot(
                                 onVerifyYouTubeChannel = viewModel::verifyYouTubeChannelNow,
                                 onClearIntegrationLogs = viewModel::clearIntegrationLogs,
                                 onOpenSafetyApprovalSheet = { viewModel.setShowSafetyApprovalSheet(true) },
-                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                clonedRepos = clonedRepos,
+                                onOpenGitClone = { viewModel.setShowGitCloneSheet(true) },
+                                onSyncClonedRepo = viewModel::syncClonedRepository,
+                                onDeleteClonedRepo = viewModel::deleteClonedRepository,
+                                onExploreRepoFiles = viewModel::openRepoFileBrowser,
+                                onActivateRepoSkillsInChat = viewModel::activateRepoSkillsInActiveConversation
                             )
                         }
 

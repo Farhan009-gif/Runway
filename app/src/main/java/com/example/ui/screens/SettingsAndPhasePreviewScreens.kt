@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import com.example.data.local.ClonedRepoEntity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -476,7 +477,13 @@ fun IntegrationsWorkspaceScreen(
     onVerifyYouTubeChannel: (String?) -> Unit,
     onClearIntegrationLogs: () -> Unit,
     onOpenSafetyApprovalSheet: () -> Unit = {},
-    onOpenConnectors: () -> Unit = {}
+    onOpenConnectors: () -> Unit = {},
+    clonedRepos: List<ClonedRepoEntity> = emptyList(),
+    onOpenGitClone: () -> Unit = {},
+    onSyncClonedRepo: (String) -> Unit = {},
+    onDeleteClonedRepo: (String) -> Unit = {},
+    onExploreRepoFiles: (ClonedRepoEntity) -> Unit = {},
+    onActivateRepoSkillsInChat: (ClonedRepoEntity) -> Unit = {}
 ) {
     var showGitHubDialog by rememberSaveable { mutableStateOf(false) }
     var showYouTubeDialog by rememberSaveable { mutableStateOf(false) }
@@ -676,6 +683,12 @@ fun IntegrationsWorkspaceScreen(
                         testTag = "connect_tab_open_mcp_studio_chip"
                     )
                     MinimalChip(
+                        label = "+ Clone Repo",
+                        selected = false,
+                        onClick = onOpenGitClone,
+                        testTag = "connect_tab_clone_repo_chip"
+                    )
+                    MinimalChip(
                         label = "+ MCP",
                         selected = false,
                         onClick = { showAddMcpDialog = true }
@@ -714,7 +727,21 @@ fun IntegrationsWorkspaceScreen(
             )
         }
 
-        // 2. YouTube Studio Service Row
+        // 2. Cloned Git Repositories & Extracted Agent Skills
+        item {
+            com.example.ui.components.ClonedReposSection(
+                clonedRepos = clonedRepos,
+                allSkills = skills,
+                onCloneNewRepo = onOpenGitClone,
+                onSyncRepo = onSyncClonedRepo,
+                onDeleteRepo = onDeleteClonedRepo,
+                onExploreFiles = onExploreRepoFiles,
+                onActivateSkillsInChat = onActivateRepoSkillsInChat,
+                onToggleSkillEnabled = onToggleSkillEnabled
+            )
+        }
+
+        // 3. YouTube Studio Service Row
         item {
             ConnectServiceRow(
                 name = "YouTube",

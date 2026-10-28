@@ -1146,6 +1146,7 @@ fun ConversationSkillsAndToolsSheet(
     onToggleMcpToolEnabled: (McpToolEntity) -> Unit,
     onOpenIntegrationsHub: () -> Unit,
     onOpenSafetyApprovalSheet: () -> Unit = {},
+    onCloneRepoFromGit: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1189,8 +1190,18 @@ fun ConversationSkillsAndToolsSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                TextButton(onClick = onOpenIntegrationsHub) {
-                    Text("Manage All")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = onCloneRepoFromGit,
+                        modifier = Modifier.testTag("sheet_clone_repo_btn")
+                    ) {
+                        Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("+ Clone")
+                    }
+                    TextButton(onClick = onOpenIntegrationsHub) {
+                        Text("Manage All")
+                    }
                 }
             }
 

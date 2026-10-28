@@ -69,4 +69,56 @@ class ExampleUnitTest {
         assertTrue(com.example.data.mcp.SkillMarkdownParser.isReadOnlyTool("read_document", "Reads markdown file content"))
         assertTrue(com.example.data.mcp.SkillMarkdownParser.isReadOnlyTool("search_issues", "Searches GitHub issues"))
     }
+
+    @Test
+    fun gitRepoCloner_parsesMultipleGitHubUrlFormats() {
+        val target1 = com.example.data.git.GitRepoCloner.parseRepoUrl("https://github.com/anthropics/anthropic-quickstarts")
+        org.junit.Assert.assertNotNull(target1)
+        org.junit.Assert.assertEquals("anthropics", target1!!.owner)
+        org.junit.Assert.assertEquals("anthropic-quickstarts", target1.repo)
+
+        val target2 = com.example.data.git.GitRepoCloner.parseRepoUrl("modelcontextprotocol/servers")
+        org.junit.Assert.assertNotNull(target2)
+        org.junit.Assert.assertEquals("modelcontextprotocol", target2!!.owner)
+        org.junit.Assert.assertEquals("servers", target2.repo)
+
+        val targetWithBranch = com.example.data.git.GitRepoCloner.parseRepoUrl("https://github.com/octocat/Hello-World/tree/feature-branch")
+        org.junit.Assert.assertNotNull(targetWithBranch)
+        org.junit.Assert.assertEquals("feature-branch", targetWithBranch!!.branch)
+
+        val targetGit = com.example.data.git.GitRepoCloner.parseRepoUrl("git@github.com:facebook/react.git")
+        org.junit.Assert.assertNotNull(targetGit)
+        org.junit.Assert.assertEquals("facebook", targetGit!!.owner)
+        org.junit.Assert.assertEquals("react", targetGit.repo)
+    }
+
+    @Test
+    fun gitRepoCloner_extractsSkillsFromDirectory() {
+        val tempDir = java.io.File.createTempFile("test_repo", "").also { it.delete(); it.mkdirs() }
+        try {
+            val skillFile = java.io.File(tempDir, "SKILL.md")
+            skillFile.writeText(
+                """
+                ---
+                name: "git-test-skill"
+                description: "Skill parsed from git repo"
+                ---
+                Always respond with concise bullet points.
+                """.trimIndent()
+            )
+
+            val discovered = com.example.data.git.GitRepoCloner.scanForSkills(
+                repoDir = tempDir,
+                owner = "test-owner",
+                repo = "test-repo",
+                branch = "main"
+            )
+
+            org.junit.Assert.assertEquals(1, discovered.size)
+            org.junit.Assert.assertEquals("[test-repo] git-test-skill", discovered[0].name)
+            org.junit.Assert.assertTrue(discovered[0].bodyInstructions.contains("concise bullet points"))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
