@@ -537,6 +537,53 @@ fun PromptLibraryBottomSheet(
     }
 }
 
+private data class ModelSpendBreakdownItem(
+    val modelId: String,
+    val requestsCount: Int,
+    val promptTokens: Long,
+    val completionTokens: Long,
+    val totalTokens: Long,
+    val costUsd: Double
+)
+
+private data class ProviderSpendBreakdownItem(
+    val providerKey: String,
+    val providerDisplayName: String,
+    val badgeShort: String,
+    val requestsCount: Int,
+    val promptTokens: Long,
+    val completionTokens: Long,
+    val totalTokens: Long,
+    val costUsd: Double,
+    val shareOfTotalCost: Float,
+    val models: List<ModelSpendBreakdownItem>
+)
+
+private fun formatUsageCurrency(
+    costUsd: Double,
+    spendCurrency: String,
+    usdToInrRate: Double
+): String {
+    return if (spendCurrency.equals("INR", ignoreCase = true)) {
+        val inr = costUsd * usdToInrRate
+        val formatted = when {
+            inr == 0.0 -> "0.00"
+            inr >= 100.0 -> String.format(Locale.US, "%,.2f", inr)
+            inr >= 1.0 -> String.format(Locale.US, "%,.3f", inr)
+            else -> String.format(Locale.US, "%,.4f", inr)
+        }
+        "₹$formatted"
+    } else {
+        val formatted = when {
+            costUsd == 0.0 -> "0.0000"
+            costUsd >= 100.0 -> String.format(Locale.US, "%,.2f", costUsd)
+            costUsd >= 1.0 -> String.format(Locale.US, "%,.3f", costUsd)
+            else -> String.format(Locale.US, "%,.4f", costUsd)
+        }
+        "$$formatted"
+    }
+}
+
 @Composable
 fun UsageAnalyticsScreen(
     usageRecords: List<UsageRecordEntity>,
@@ -557,19 +604,122 @@ fun UsageAnalyticsScreen(
     onSetSpendCurrency: (String) -> Unit = {}
 ) {
     val totalRequests = usageRecords.size
-    val totalTokens = usageRecords.sumOf { it.promptTokens + it.completionTokens }
-    val totalCostUsd = usageRecords.sumOf { it.estimatedCostUsd }
+    val totalPromptTokens = remember(usageRecords) {
+        usageRecords.sumOf { it.promptTokens.toLong() }
+    }
+    val totalCompletionTokens = remember(usageRecords) {
+        usageRecords.sumOf { it.completionTokens.toLong() }
+    }
+    val totalTokens = totalPromptTokens + totalCompletionTokens
+    val totalCostUsd = remember(usageRecords) {
+        usageRecords.sumOf { it.estimatedCostUsd }
+    }
 
+    val formattedRequests = remember(totalRequests) {
+        String.format(Locale.US, "%,d", totalRequests)
+    }
+    val formattedTokens = remember(totalTokens) {
+        String.format(Locale.US, "%,d", totalTokens)
+    }
+    val formattedPromptTokens = remember(totalPromptTokens) {
+        String.format(Locale.US, "%,d", totalPromptTokens)
+    }
+    val formattedCompletionTokens = remember(totalCompletionTokens) {
+        String.format(Locale.US, "%,d", totalCompletionTokens)
+    }
     val formattedCost = remember(totalCostUsd, spendCurrency, usdToInrRate) {
-        if (spendCurrency == "INR") {
-            val inr = totalCostUsd * usdToInrRate
-            val str = if (inr >= 100.0) String.format(Locale.US, "%.2f", inr)
-            else if (inr >= 1.0) String.format(Locale.US, "%.3f", inr)
-            else String.format(Locale.US, "%.4f", inr)
-            "₹$str"
-        } else {
-            "$${String.format(Locale.US, "%.4f", totalCostUsd)}"
+        formatUsageCurrency(totalCostUsd, spendCurrency, usdToInrRate)
+    }
+    val alternateCurrency = if (spendCurrency == "INR") "USD" else "INR"
+    val formattedAlternateCost = remember(totalCostUsd, alternateCurrency, usdToInrRate) {
+        formatUsageCurrency(totalCostUsd, alternateCurrency, usdToInrRate)
+    }
+
+    val providerSpendBreakdown = remember(usageRecords, providers, totalCostUsd) {
+        val providerById = providers.associateBy { it.id }
+        val groupedByProvider = usageRecords.groupBy { record ->
+            record.providerInstanceId.ifBlank { record.providerDisplayName.ifBlank { "unknown" } }
         }
+
+        val activeItems = groupedByProvider.map { (provKey, records) ->
+            val matchedProvider = providerById[provKey]
+                ?: providers.firstOrNull { it.displayName.equals(records.first().providerDisplayName, ignoreCase = true) }
+            val displayName = matchedProvider?.displayName?.takeIf { it.isNotBlank() }
+                ?: records.firstOrNull { it.providerDisplayName.isNotBlank() }?.providerDisplayName
+                ?: provKey
+            val badge = matchedProvider?.presetEnum()?.badgeShort
+                ?: displayName.take(4).uppercase()
+            val pTokens = records.sumOf { it.promptTokens.toLong() }
+            val cTokens = records.sumOf { it.completionTokens.toLong() }
+            val tTokens = pTokens + cTokens
+            val cost = records.sumOf { it.estimatedCostUsd }
+            val share = if (totalCostUsd > 0.0) {
+                (cost / totalCostUsd).toFloat().coerceIn(0f, 1f)
+            } else if (totalTokens > 0L) {
+                (tTokens.toDouble() / totalTokens.toDouble()).toFloat().coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+
+            val modelBreakdown = records
+                .groupBy { it.modelId.ifBlank { "default" } }
+                .map { (mId, mRecords) ->
+                    val mp = mRecords.sumOf { it.promptTokens.toLong() }
+                    val mc = mRecords.sumOf { it.completionTokens.toLong() }
+                    ModelSpendBreakdownItem(
+                        modelId = mId,
+                        requestsCount = mRecords.size,
+                        promptTokens = mp,
+                        completionTokens = mc,
+                        totalTokens = mp + mc,
+                        costUsd = mRecords.sumOf { it.estimatedCostUsd }
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<ModelSpendBreakdownItem> { it.costUsd }
+                        .thenByDescending { it.totalTokens }
+                )
+
+            ProviderSpendBreakdownItem(
+                providerKey = provKey,
+                providerDisplayName = displayName,
+                badgeShort = badge,
+                requestsCount = records.size,
+                promptTokens = pTokens,
+                completionTokens = cTokens,
+                totalTokens = tTokens,
+                costUsd = cost,
+                shareOfTotalCost = share,
+                models = modelBreakdown
+            )
+        }
+
+        val representedIds = activeItems.map { it.providerKey }.toSet()
+        val representedNames = activeItems.map { it.providerDisplayName.lowercase() }.toSet()
+        val zeroSpendProviders = providers
+            .filter { prov ->
+                prov.id !in representedIds && prov.displayName.lowercase() !in representedNames
+            }
+            .map { prov ->
+                ProviderSpendBreakdownItem(
+                    providerKey = prov.id,
+                    providerDisplayName = prov.displayName,
+                    badgeShort = prov.presetEnum().badgeShort,
+                    requestsCount = 0,
+                    promptTokens = 0L,
+                    completionTokens = 0L,
+                    totalTokens = 0L,
+                    costUsd = 0.0,
+                    shareOfTotalCost = 0f,
+                    models = emptyList()
+                )
+            }
+
+        activeItems.sortedWith(
+            compareByDescending<ProviderSpendBreakdownItem> { it.costUsd }
+                .thenByDescending { it.totalTokens }
+                .thenByDescending { it.requestsCount }
+        ) + zeroSpendProviders
     }
 
     val chartPoints = remember(usageRecords, latencySamples) {
@@ -635,27 +785,94 @@ fun UsageAnalyticsScreen(
             }
         }
 
-        // 3 Simple Stat Cards (Requests, Tokens, Cost)
+        // Spacious KPI Cards: Full Numbers Always Visible (Never Truncated)
         item {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    UsageKpiCard(
+                        label = "Requests",
+                        value = formattedRequests,
+                        subtitle = "${providerSpendBreakdown.count { it.requestsCount > 0 }} active providers",
+                        modifier = Modifier
+                            .weight(0.38f)
+                            .testTag("usage_kpi_requests_card")
+                    )
+                    UsageKpiCard(
+                        label = "Tokens",
+                        value = formattedTokens,
+                        subtitle = "In: $formattedPromptTokens · Out: $formattedCompletionTokens",
+                        modifier = Modifier
+                            .weight(0.62f)
+                            .testTag("usage_kpi_tokens_card")
+                    )
+                }
+
                 UsageKpiCard(
-                    label = "Requests",
-                    value = totalRequests.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-                UsageKpiCard(
-                    label = "Tokens",
-                    value = totalTokens.toString(),
-                    modifier = Modifier.weight(1f)
-                )
-                UsageKpiCard(
-                    label = "Cost",
+                    label = "Estimated Cost",
                     value = formattedCost,
-                    modifier = Modifier.weight(1f)
+                    subtitle = "≈ $formattedAlternateCost $alternateCurrency (estimated total across all providers)",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("usage_kpi_cost_card")
                 )
+            }
+        }
+
+        // Spend by Provider Breakdown Section
+        item {
+            MinimalCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("provider_spend_breakdown_card")
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Spend by Provider",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Exact token usage and estimated spend for each AI provider",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        BadgePill(
+                            text = "${providerSpendBreakdown.count { it.requestsCount > 0 }}/${providerSpendBreakdown.size} used",
+                            color = SoftIndigo
+                        )
+                    }
+
+                    if (providerSpendBreakdown.isEmpty()) {
+                        Text(
+                            text = "No provider spend recorded yet. Send a chat message or generate media to track per-provider spend.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            providerSpendBreakdown.forEach { item ->
+                                ProviderSpendRowCard(
+                                    item = item,
+                                    spendCurrency = spendCurrency,
+                                    usdToInrRate = usdToInrRate
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -672,7 +889,7 @@ fun UsageAnalyticsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = if (usageRecords.size >= 2) "Token activity" else "Response latency (ms)",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -783,16 +1000,173 @@ fun UsageAnalyticsScreen(
 }
 
 @Composable
+private fun ProviderSpendRowCard(
+    item: ProviderSpendBreakdownItem,
+    spendCurrency: String,
+    usdToInrRate: Double
+) {
+    val primaryCostText = remember(item.costUsd, spendCurrency, usdToInrRate) {
+        formatUsageCurrency(item.costUsd, spendCurrency, usdToInrRate)
+    }
+    val secondaryCurrency = if (spendCurrency == "INR") "USD" else "INR"
+    val secondaryCostText = remember(item.costUsd, secondaryCurrency, usdToInrRate) {
+        formatUsageCurrency(item.costUsd, secondaryCurrency, usdToInrRate)
+    }
+    val sharePercentText = remember(item.shareOfTotalCost) {
+        String.format(Locale.US, "%.1f%%", item.shareOfTotalCost * 100f)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(
+            1.dp,
+            if (item.requestsCount > 0) SoftIndigo.copy(alpha = 0.4f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("provider_spend_item_${item.providerKey}")
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = SoftIndigo.copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = item.badgeShort,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = SoftIndigo,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Text(
+                            text = item.providerDisplayName,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                    Text(
+                        text = "${String.format(Locale.US, "%,d", item.requestsCount)} reqs · ${String.format(Locale.US, "%,d", item.totalTokens)} tokens (In: ${String.format(Locale.US, "%,d", item.promptTokens)} · Out: ${String.format(Locale.US, "%,d", item.completionTokens)})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = primaryCostText,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = if (item.costUsd > 0.0) EmeraldConnected else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "≈ $secondaryCostText · $sharePercentText",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Proportional spend bar
+            if (item.requestsCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxSize()
+                    ) {}
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = SoftIndigo,
+                        modifier = Modifier
+                            .fillMaxWidth(item.shareOfTotalCost.coerceIn(0.03f, 1f))
+                            .height(5.dp)
+                    ) {}
+                }
+            }
+
+            // Per-model breakdown inside this provider
+            if (item.models.isNotEmpty()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    item.models.forEach { mod ->
+                        val modCostText = formatUsageCurrency(mod.costUsd, spendCurrency, usdToInrRate)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = mod.modelId,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                            )
+                            Text(
+                                text = "${String.format(Locale.US, "%,d", mod.requestsCount)} req · ${String.format(Locale.US, "%,d", mod.totalTokens)} tok · $modCostText",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UsageKpiCard(
     label: String,
     value: String,
+    subtitle: String? = null,
     modifier: Modifier = Modifier
 ) {
+    val valueTextStyle = when {
+        value.length <= 8 -> MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        value.length <= 13 -> MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+        else -> MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+    }
+
     MinimalCard(
         modifier = modifier,
         contentPadding = PaddingValues(14.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
@@ -800,11 +1174,18 @@ private fun UsageKpiCard(
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleLarge,
+                style = valueTextStyle,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                softWrap = true
             )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    softWrap = true
+                )
+            }
         }
     }
 }

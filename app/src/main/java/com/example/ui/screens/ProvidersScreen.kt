@@ -763,7 +763,8 @@ private fun OmniRouteGatewayCombosCard(
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                         color = MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
@@ -781,6 +782,9 @@ private fun OmniRouteGatewayCombosCard(
                                                 "IMAGE" -> EmeraldSuccess
                                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                                             },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
@@ -837,6 +841,7 @@ private fun OmniRouteGatewayCombosCard(
 internal fun OmniRouteComboBuilderDialog(
     initialCombo: OmniRouteComboDefinition?,
     defaultModality: String = "VIDEO",
+    availableModels: List<com.example.data.local.ModelDescriptorEntity> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (
         rawId: String,

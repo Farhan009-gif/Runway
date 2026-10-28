@@ -1008,7 +1008,8 @@ class OmniRepository(
         modality: String,
         strategy: String,
         targetModels: List<String>,
-        description: String = ""
+        description: String = "",
+        additionalProviderId: String? = null
     ): com.example.data.provider.OmniRouteComboDefinition = withContext(Dispatchers.IO) {
         val saved = EmbeddedOmniRouteServer.upsertCustomCombo(
             rawId = rawId,
@@ -1018,8 +1019,11 @@ class OmniRepository(
             targetModels = targetModels,
             description = description
         )
-        val omniProviders = dao.getProvidersOnce().filter {
-            it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
+        val allProviders = dao.getProvidersOnce()
+        val omniProviders = allProviders.filter {
+            it.presetEnum() == ProviderPresetType.OMNIROUTE ||
+                it.baseUrl.contains("20128") ||
+                (additionalProviderId != null && it.id == additionalProviderId)
         }
         val cap = when (saved.modality.uppercase()) {
             "VIDEO" -> setOf(CapabilityTag.VIDEO)

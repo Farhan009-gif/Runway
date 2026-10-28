@@ -252,7 +252,13 @@ object EmbeddedOmniRouteServer {
             }
         }
         val cleanModality = modality.trim().uppercase().takeIf { it in setOf("CHAT", "VIDEO", "IMAGE") } ?: "CHAT"
-        val cleanStrategy = strategy.trim().uppercase().takeIf { it in setOf("FALLBACK", "ROUND_ROBIN", "FASTEST") } ?: "FALLBACK"
+        val cleanStrategy = when (strategy.trim().uppercase()) {
+            "ROUND_ROBIN" -> "ROUND_ROBIN"
+            "FASTEST", "LATENCY_FIRST" -> "LATENCY_FIRST"
+            "FALLBACK_CHAIN" -> "FALLBACK_CHAIN"
+            "FALLBACK" -> "FALLBACK"
+            else -> "FALLBACK_CHAIN"
+        }
         val cleanTargets = targetModels.map { it.trim() }.filter { it.isNotEmpty() }.distinct().ifEmpty {
             when (cleanModality) {
                 "VIDEO" -> listOf("omniroute/wan-2.1-t2v", "omniroute/kling-v1.6-pro", "omniroute/luma-ray-2")
@@ -324,7 +330,7 @@ object EmbeddedOmniRouteServer {
                 val idx = (roundRobinCursor.getAndIncrement().coerceAtLeast(0)) % targets.size
                 targets.drop(idx) + targets.take(idx)
             }
-            "FASTEST" -> targets.sortedBy { EndpointUrlNormalizer.modelPriorityRank(it) }
+            "FASTEST", "LATENCY_FIRST" -> targets.sortedBy { EndpointUrlNormalizer.modelPriorityRank(it) }
             else -> targets
         }
     }

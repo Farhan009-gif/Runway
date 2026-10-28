@@ -262,7 +262,9 @@ fun VideoStudioScreen(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.surface,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        modifier = Modifier.testTag("video_model_selector_chip")
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .testTag("video_model_selector_chip")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -941,7 +943,10 @@ private fun VideoModelPickerSheet(
                                 ) {
                                     Text(
                                         text = mod.displayName,
-                                        style = MaterialTheme.typography.bodyMedium
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     if (mod.isCombo || comboDef != null) {
                                         Surface(
@@ -952,6 +957,9 @@ private fun VideoModelPickerSheet(
                                                 text = if (comboDef != null) "COMBO · ${comboDef.strategy}" else "COMBO",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = SoftIndigo,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                             )
                                         }

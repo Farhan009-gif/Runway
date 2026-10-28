@@ -377,6 +377,20 @@ private fun OmniStudioRoot(
             onAddManualModel = viewModel::addManualModel,
             onFetchModelsForProvider = { prov -> viewModel.testAndFetchModels(prov) },
             isFetchingProviderId = uiState.busyProviderId,
+            omniRouteCombos = uiState.omniRouteCombos,
+            onUpsertCustomCombo = { rawId, displayName, modality, strategy, targetModels, description, additionalProviderId ->
+                viewModel.upsertOmniRouteCustomCombo(
+                    rawId = rawId,
+                    displayName = displayName,
+                    modality = modality,
+                    strategy = strategy,
+                    targetModels = targetModels,
+                    description = description,
+                    selectInStudio = true,
+                    additionalProviderId = additionalProviderId
+                )
+            },
+            onDeleteCustomCombo = viewModel::deleteOmniRouteCustomCombo,
             onDismiss = { viewModel.setShowModelPickerSheet(false) }
         )
     }
@@ -703,7 +717,19 @@ private fun OmniStudioRoot(
                                     viewModel.selectTab(WorkspaceTab.SETTINGS)
                                 },
                                 onOpenTerminalAndHealthSheet = { viewModel.setShowTerminalAndHealthSheet(true) },
-                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                onUpsertCustomCombo = { rawId, displayName, strategy, targetModels, description ->
+                                    viewModel.upsertOmniRouteCustomCombo(
+                                        rawId = rawId,
+                                        displayName = displayName,
+                                        modality = "CHAT",
+                                        strategy = strategy,
+                                        targetModels = targetModels,
+                                        description = description,
+                                        selectInStudio = true,
+                                        additionalProviderId = activeConversation?.providerInstanceId
+                                    )
+                                }
                             )
                         }
 
@@ -816,6 +842,17 @@ private fun OmniStudioRoot(
                                                 onOpenProviderSettings = {
                                                     moreSubTab = 1
                                                     viewModel.selectTab(WorkspaceTab.SETTINGS)
+                                                },
+                                                onUpsertOmniRouteCombo = { rawId, displayName, strategy, targetModels, description ->
+                                                    viewModel.upsertOmniRouteCustomCombo(
+                                                        rawId = rawId,
+                                                        displayName = displayName,
+                                                        modality = "IMAGE",
+                                                        strategy = strategy,
+                                                        targetModels = targetModels,
+                                                        description = description,
+                                                        selectInStudio = true
+                                                    )
                                                 }
                                             )
                                         }

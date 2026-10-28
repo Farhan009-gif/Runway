@@ -53,7 +53,7 @@ class ExampleRobolectricTest {
         assertEquals(rawKey, decrypted)
 
         val masked = vault.getMaskedApiKey(providerId)
-        assertEquals("sk-o••••••••7654", masked)
+        assertEquals("test••••••••-000", masked)
 
         // Verify ciphertext is not plaintext and AAD prevents cross-provider decryption
         val cipher = vault.encryptString(rawKey, providerId)
@@ -408,7 +408,7 @@ class ExampleRobolectricTest {
         // 4. Tink Secret Vault Integration Token Encryption & Room IntegrationAuditLogEntity
         val vault = TinkSecretVault(context)
         vault.saveApiKey(TinkSecretVault.INTEGRATION_GITHUB_PAT_ID, "test-token-000")
-        assertEquals("ghp_••••••••3456", vault.getMaskedApiKey(TinkSecretVault.INTEGRATION_GITHUB_PAT_ID))
+        assertEquals("test••••••••-000", vault.getMaskedApiKey(TinkSecretVault.INTEGRATION_GITHUB_PAT_ID))
 
         val db = Room.inMemoryDatabaseBuilder(context, OmniDatabase::class.java)
             .allowMainThreadQueries()
@@ -628,7 +628,7 @@ class ExampleRobolectricTest {
         val cipherPreview = state.cipherPreviewsByProvider[openAiProv.id]
 
         assertTrue("Provider should now have API key in map", !maskedKey.isNullOrBlank())
-        assertEquals("sk-p••••••••5678", maskedKey)
+        assertEquals("test••••••••-001", maskedKey)
         assertTrue("Ciphertext preview should be populated and non-empty", !cipherPreview.isNullOrBlank())
         assertNotEquals("Ciphertext should NOT be plaintext", testRawKey, cipherPreview)
 
@@ -909,6 +909,56 @@ class ExampleRobolectricTest {
             val boxType = String(bytes.sliceArray(4..7), Charsets.US_ASCII)
             assertEquals("ftyp", boxType)
         }
+
+        db.close()
+    }
+
+    @Test
+    fun chatAndModels_supportCustomCombosAndMultiModelRouting() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, OmniDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val dao = db.omniDao()
+        val vault = TinkSecretVault(context)
+        val repo = com.example.data.repository.OmniRepository(context, dao, vault)
+
+        repo.ensureDefaultPresetsSeeded()
+
+        val openAiProv = ProviderInstanceEntity(
+            id = "provider_openai_custom",
+            presetType = ProviderPresetType.OPENAI.name,
+            displayName = "OpenAI Custom",
+            baseUrl = ProviderPresetType.OPENAI.defaultBaseUrl,
+            capabilitiesCsv = "CHAT,IMAGE",
+            isEnabled = true
+        )
+        dao.upsertProvider(openAiProv)
+
+        // 1. Add a custom CHAT combo associated with both OmniRoute and the selected provider in Models picker
+        val chatCombo = repo.upsertOmniRouteCustomCombo(
+            rawId = "omniroute/team-coding-combo",
+            displayName = "Team Coding Combo",
+            modality = "CHAT",
+            strategy = "LATENCY_FIRST",
+            targetModels = listOf("ddgw/gpt-4o-mini", "ddgw/claude-3-haiku", "ddgw/llama-3.3-70b"),
+            description = "Fast coding combo for chat and models",
+            additionalProviderId = openAiProv.id
+        )
+
+        assertEquals("omniroute/team-coding-combo", chatCombo.id)
+        assertEquals("CHAT", chatCombo.modality)
+        assertEquals("LATENCY_FIRST", chatCombo.strategy)
+
+        // 2. Verify combo is stored in Room models under both OmniRoute and the selected provider
+        val omniModels = dao.getModelsForProviderOnce("provider_omniroute_default")
+        val openAiModels = dao.getModelsForProviderOnce(openAiProv.id)
+        assertTrue(omniModels.any { it.modelId == "omniroute/team-coding-combo" && it.isCombo && CapabilityTag.CHAT in it.capabilitySet() })
+        assertTrue(openAiModels.any { it.modelId == "omniroute/team-coding-combo" && it.isCombo && CapabilityTag.CHAT in it.capabilitySet() })
+
+        // 3. Verify EmbeddedOmniRouteServer resolves custom combo targets
+        val registeredCombos = com.example.data.provider.EmbeddedOmniRouteServer.combosFlow.value
+        assertTrue(registeredCombos.any { it.id == "omniroute/team-coding-combo" && it.modality == "CHAT" })
 
         db.close()
     }

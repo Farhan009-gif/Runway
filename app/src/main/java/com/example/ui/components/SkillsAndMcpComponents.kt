@@ -480,7 +480,8 @@ fun SkillsAndMcpSection(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
                         Icon(
                             imageVector = Icons.Default.History,
@@ -566,7 +567,10 @@ private fun SkillItemCard(
                         Text(
                             text = skill.name,
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         BadgePill(
                             text = "~${skill.estimatedTokens} tok",
@@ -697,7 +701,10 @@ private fun McpServerItemCard(
                         Text(
                             text = server.name,
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         BadgePill(
                             text = server.transportEnum().label,
@@ -1029,7 +1036,8 @@ fun CollapsibleToolCallCard(
                         text = if (isCodeExecution) "run_code (JavaScript)" else "${log.serverName} • ${log.toolName}",
                         style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFontFamily),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
                 Row(
@@ -1206,7 +1214,10 @@ fun ConversationSkillsAndToolsSheet(
                         Text(
                             text = "Active Skills (${enabledSkillsForConv.size}/${skills.size})",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         BadgePill(
                             text = "+~$totalSkillTokens prompt tokens",
@@ -1255,7 +1266,10 @@ fun ConversationSkillsAndToolsSheet(
                                 ) {
                                     Text(
                                         text = skill.name,
-                                        style = MaterialTheme.typography.labelLarge
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     BadgePill(text = "~${skill.estimatedTokens} tok", color = CyberCyan)
                                 }
@@ -1506,6 +1520,9 @@ fun ToolCallApprovalDialog(
                 }
 
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {

@@ -97,6 +97,7 @@ import com.example.data.local.SkillEntity
 import com.example.data.local.ToolCallLogEntity
 import com.example.data.local.getAttachments
 import com.example.data.mcp.SkillMarkdownParser
+import com.example.data.provider.OmniRouteComboDefinition
 import com.example.ui.components.CollapsibleToolCallCard
 import com.example.ui.components.LucideIcons
 import com.example.ui.components.MinimalButton
@@ -180,7 +181,14 @@ fun ChatWorkspaceScreen(
     onSwitchToDirectModel: (String) -> Unit = {},
     onOpenProviderSettings: () -> Unit = {},
     onOpenTerminalAndHealthSheet: () -> Unit = {},
-    onOpenConnectors: () -> Unit = {}
+    onOpenConnectors: () -> Unit = {},
+    onUpsertCustomCombo: (
+        rawId: String,
+        displayName: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String
+    ) -> Unit = { _, _, _, _, _ -> }
 ) {
     val activeConversation = remember(conversations, uiState.activeConversationId) {
         conversations.firstOrNull { it.id == uiState.activeConversationId } ?: conversations.firstOrNull()
@@ -190,6 +198,11 @@ fun ChatWorkspaceScreen(
             it.providerInstanceId == activeConversation?.providerInstanceId &&
                 it.modelId == activeConversation?.modelId
         }
+    }
+    val isActiveModelCombo = remember(activeModelDescriptor, activeConversation, uiState.omniRouteCombos) {
+        val modelId = activeConversation?.modelId.orEmpty()
+        activeModelDescriptor?.isCombo == true ||
+            uiState.omniRouteCombos.any { it.id.equals(modelId, ignoreCase = true) }
     }
 
     val activeSkillsCount = remember(skills, activeConversation, uiState.draftMessage) {
@@ -206,7 +219,20 @@ fun ChatWorkspaceScreen(
 
     var showToolsSheet by rememberSaveable { mutableStateOf(false) }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
+    var showChatComboBuilderDialog by rememberSaveable { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ConversationEntity?>(null) }
+
+    if (showChatComboBuilderDialog) {
+        OmniRouteComboBuilderDialog(
+            initialCombo = null,
+            defaultModality = "CHAT",
+            onDismiss = { showChatComboBuilderDialog = false },
+            onSave = { rawId, displayName, _, strategy, targetModels, description ->
+                onUpsertCustomCombo(rawId, displayName, strategy, targetModels, description)
+                showChatComboBuilderDialog = false
+            }
+        )
+    }
 
     val multiPhotoLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(10)
@@ -291,6 +317,17 @@ fun ChatWorkspaceScreen(
                     onToggleCompareMode(!uiState.compareModeEnabled)
                 },
                 testTag = "tools_sheet_compare"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Layers,
+                title = "Custom combos",
+                subtitle = "Create multi-model fallback, round-robin, or latency-first chat combos",
+                isActive = isActiveModelCombo,
+                onClick = {
+                    showToolsSheet = false
+                    showChatComboBuilderDialog = true
+                },
+                testTag = "tools_sheet_custom_combos"
             )
             MinimalToolRow(
                 icon = LucideIcons.Sparkles,
@@ -455,10 +492,13 @@ fun ChatWorkspaceScreen(
                 Box(modifier = Modifier.weight(1f)) {
                     MinimalChatCanvas(
                         uiState = uiState,
+                        providers = providers,
+                        models = models,
                         activeConversation = activeConversation,
                         activeModelName = activeModelDescriptor?.modelId
                             ?: activeConversation?.modelId
                             ?: "gpt-4o",
+                        isActiveModelCombo = isActiveModelCombo,
                         activeSkillsCount = activeSkillsCount,
                         enabledMcpToolsCount = enabledMcpToolsCount,
                         messages = messages,
@@ -536,10 +576,13 @@ fun ChatWorkspaceScreen(
             ) {
                 MinimalChatCanvas(
                     uiState = uiState,
+                    providers = providers,
+                    models = models,
                     activeConversation = activeConversation,
                     activeModelName = activeModelDescriptor?.modelId
                         ?: activeConversation?.modelId
                         ?: "gpt-4o",
+                    isActiveModelCombo = isActiveModelCombo,
                     activeSkillsCount = activeSkillsCount,
                     enabledMcpToolsCount = enabledMcpToolsCount,
                     messages = messages,
@@ -547,6 +590,7 @@ fun ChatWorkspaceScreen(
                     showMenuButton = true,
                     onOpenMenu = { coroutineScope.launch { drawerState.open() } },
                     onOpenModelPicker = onOpenModelPicker,
+                    onOpenNewComboDialog = { showChatComboBuilderDialog = true },
                     onOpenToolsSheet = { showToolsSheet = true },
                     onOpenSkillsAndToolsSheet = onOpenSkillsAndToolsSheet,
                     onOpenAttachSheet = { showAttachSheet = true },
@@ -644,8 +688,11 @@ fun ChatScreen(
 @Composable
 private fun MinimalChatCanvas(
     uiState: OmniUiState,
+    providers: List<ProviderInstanceEntity> = emptyList(),
+    models: List<ModelDescriptorEntity> = emptyList(),
     activeConversation: ConversationEntity?,
     activeModelName: String,
+    isActiveModelCombo: Boolean = false,
     activeSkillsCount: Int,
     enabledMcpToolsCount: Int,
     messages: List<MessageEntity>,
@@ -653,6 +700,7 @@ private fun MinimalChatCanvas(
     showMenuButton: Boolean,
     onOpenMenu: () -> Unit,
     onOpenModelPicker: () -> Unit,
+    onOpenNewComboDialog: () -> Unit = {},
     onOpenToolsSheet: () -> Unit,
     onOpenSkillsAndToolsSheet: () -> Unit,
     onOpenAttachSheet: () -> Unit,
@@ -719,7 +767,7 @@ private fun MinimalChatCanvas(
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
     ) {
-        // 1. Minimal Top Bar: Menu left, Model pill center, Overflow right
+        // 1. Minimal Top Bar: Menu left, Model pill + Combo chip center, Overflow right
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -745,36 +793,61 @@ private fun MinimalChatCanvas(
                 Spacer(modifier = Modifier.size(44.dp))
             }
 
-            // Center single tappable model pill
-            Surface(
-                onClick = onOpenModelPicker,
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier
-                    .heightIn(min = 38.dp)
-                    .widthIn(max = 220.dp)
-                    .testTag("top_bar_model_selector_pill")
+            // Center tappable model pill + quick "+ Combo" button
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Surface(
+                    onClick = onOpenModelPicker,
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .heightIn(min = 38.dp)
+                        .widthIn(max = 210.dp)
+                        .testTag("top_bar_model_selector_pill")
                 ) {
-                    Text(
-                        text = activeModelName.substringAfterLast("/"),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Icon(
-                        imageVector = LucideIcons.ChevronDown,
-                        contentDescription = "Select model",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = activeModelName.substringAfterLast("/"),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (isActiveModelCombo) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = SoftIndigo.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = "COMBO",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SoftIndigo,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = LucideIcons.ChevronDown,
+                            contentDescription = "Select model",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
+
+                MinimalChip(
+                    label = "+ Combo",
+                    selected = false,
+                    onClick = onOpenNewComboDialog,
+                    testTag = "chat_top_bar_new_combo_button"
+                )
             }
 
             // Right single overflow icon -> opens "Tools" bottom sheet
@@ -912,6 +985,9 @@ private fun MinimalChatCanvas(
                                 }
                                 MinimalChatMessageItem(
                                     message = msg,
+                                    providers = providers,
+                                    models = models,
+                                    combos = uiState.omniRouteCombos,
                                     toolLogs = msgLogs,
                                     isLastAssistantMessage = msg.id == lastAssistantId,
                                     isTokenCountEstimated = msg.id in uiState.estimatedTokenMessageIds,
@@ -926,6 +1002,9 @@ private fun MinimalChatCanvas(
                             is ThreadDisplayItem.ComparisonRow -> {
                                 MinimalComparisonRow(
                                     responses = item.responses,
+                                    providers = providers,
+                                    models = models,
+                                    combos = uiState.omniRouteCombos,
                                     estimatedMessageIds = uiState.estimatedTokenMessageIds,
                                     onCopiedToast = onCopiedToast
                                 )
@@ -993,8 +1072,7 @@ private fun MinimalChatCanvas(
                     text = conversationSummaryText,
                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    softWrap = true,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -1107,9 +1185,160 @@ private fun MinimalEmptyChatState(
  * - No bubbles for the AI (plain text on the #0B0D10 background)
  * - A soft rounded bubble only for user messages (#14171C surface with 1px subtle border)
  */
+private data class AssistantResponseIdentity(
+    val modelDisplayName: String,
+    val rawModelId: String,
+    val providerDisplayName: String,
+    val isCombo: Boolean
+)
+
+private fun resolveAssistantIdentity(
+    message: MessageEntity,
+    providers: List<ProviderInstanceEntity>,
+    models: List<ModelDescriptorEntity>,
+    combos: List<OmniRouteComboDefinition>
+): AssistantResponseIdentity {
+    val rawModelId = message.modelId.ifBlank { "gpt-4o" }
+    val matchedCombo = combos.firstOrNull { it.id.equals(rawModelId, ignoreCase = true) }
+    val matchedModel = models.firstOrNull {
+        it.providerInstanceId == message.providerInstanceId && it.modelId.equals(rawModelId, ignoreCase = true)
+    } ?: models.firstOrNull { it.modelId.equals(rawModelId, ignoreCase = true) }
+
+    val matchedProvider = providers.firstOrNull { it.id == message.providerInstanceId }
+    val providerDisplayName = when {
+        matchedProvider != null && matchedProvider.displayName.isNotBlank() -> matchedProvider.displayName
+        rawModelId.startsWith("omniroute/", ignoreCase = true) ||
+            message.providerInstanceId.contains("omniroute", ignoreCase = true) -> "OmniRoute Gateway"
+        message.providerInstanceId.contains("openai", ignoreCase = true) ||
+            rawModelId.startsWith("gpt-", ignoreCase = true) ||
+            rawModelId.startsWith("o1", ignoreCase = true) ||
+            rawModelId.startsWith("o3", ignoreCase = true) -> "OpenAI"
+        message.providerInstanceId.contains("anthropic", ignoreCase = true) ||
+            rawModelId.contains("claude", ignoreCase = true) -> "Anthropic"
+        message.providerInstanceId.contains("gemini", ignoreCase = true) ||
+            rawModelId.contains("gemini", ignoreCase = true) -> "Google Gemini"
+        message.providerInstanceId.contains("groq", ignoreCase = true) -> "Groq"
+        message.providerInstanceId.contains("openrouter", ignoreCase = true) -> "OpenRouter"
+        message.providerInstanceId.contains("deepseek", ignoreCase = true) ||
+            rawModelId.contains("deepseek", ignoreCase = true) -> "DeepSeek"
+        message.providerInstanceId.isNotBlank() -> message.providerInstanceId
+            .removePrefix("preset_")
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        else -> "AI Provider"
+    }
+
+    val priceEntry = com.example.data.provider.ModelPriceTable.lookupPricing(rawModelId)
+    val modelDisplayName = when {
+        matchedCombo != null && matchedCombo.displayName.isNotBlank() -> matchedCombo.displayName
+        matchedModel != null && matchedModel.displayName.isNotBlank() -> matchedModel.displayName
+        priceEntry.modelPattern != "default" -> priceEntry.displayName
+        else -> rawModelId.substringAfterLast("/")
+    }
+
+    return AssistantResponseIdentity(
+        modelDisplayName = modelDisplayName,
+        rawModelId = rawModelId,
+        providerDisplayName = providerDisplayName,
+        isCombo = matchedCombo != null || matchedModel?.isCombo == true || rawModelId.startsWith("omniroute/", ignoreCase = true)
+    )
+}
+
+@Composable
+private fun AssistantResponderHeader(
+    message: MessageEntity,
+    identity: AssistantResponseIdentity,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("assistant_response_ai_header_${message.id}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = LucideIcons.Sparkles,
+            contentDescription = "AI Responder",
+            tint = SoftIndigo,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = identity.modelDisplayName,
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        val shortRaw = identity.rawModelId.substringAfterLast("/")
+        if (!identity.modelDisplayName.equals(shortRaw, ignoreCase = true) &&
+            !identity.modelDisplayName.equals(identity.rawModelId, ignoreCase = true)
+        ) {
+            Text(
+                text = "($shortRaw)",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(4.dp),
+            color = SoftIndigo.copy(alpha = 0.14f)
+        ) {
+            Text(
+                text = identity.providerDisplayName,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = SoftIndigo,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
+        if (message.isStreaming) {
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = CyberCyan.copy(alpha = 0.14f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(9.dp),
+                        strokeWidth = 1.5.dp,
+                        color = CyberCyan
+                    )
+                    Text(
+                        text = "Responding…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyberCyan,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        } else if (message.latencyMs > 0L) {
+            Text(
+                text = "· ${message.latencyMs}ms",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
 @Composable
 private fun MinimalChatMessageItem(
     message: MessageEntity,
+    providers: List<ProviderInstanceEntity> = emptyList(),
+    models: List<ModelDescriptorEntity> = emptyList(),
+    combos: List<OmniRouteComboDefinition> = emptyList(),
     toolLogs: List<ToolCallLogEntity>,
     isLastAssistantMessage: Boolean,
     isTokenCountEstimated: Boolean = false,
@@ -1123,6 +1352,14 @@ private fun MinimalChatMessageItem(
     val isUser = message.role.equals("user", ignoreCase = true)
     val attachments = remember(message.attachmentUri, message.attachmentMimeType) {
         message.getAttachments()
+    }
+    val assistantIdentity = remember(message.modelId, message.providerInstanceId, providers, models, combos) {
+        resolveAssistantIdentity(
+            message = message,
+            providers = providers,
+            models = models,
+            combos = combos
+        )
     }
     var fullScreenAttachmentUri by remember { mutableStateOf<String?>(null) }
 
@@ -1199,6 +1436,12 @@ private fun MinimalChatMessageItem(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Top header showing which AI model and provider is responding to the request
+                AssistantResponderHeader(
+                    message = message,
+                    identity = assistantIdentity
+                )
+
                 if (toolLogs.isNotEmpty()) {
                     toolLogs.forEach { log ->
                         CollapsibleToolCallCard(log = log)
@@ -1355,6 +1598,9 @@ private fun MinimalChatMessageItem(
 @Composable
 private fun MinimalComparisonRow(
     responses: List<MessageEntity>,
+    providers: List<ProviderInstanceEntity> = emptyList(),
+    models: List<ModelDescriptorEntity> = emptyList(),
+    combos: List<OmniRouteComboDefinition> = emptyList(),
     estimatedMessageIds: Set<String> = emptySet(),
     onCopiedToast: (String) -> Unit
 ) {
@@ -1366,6 +1612,9 @@ private fun MinimalComparisonRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         responses.forEach { resp ->
+            val identity = remember(resp.modelId, resp.providerInstanceId, providers, models, combos) {
+                resolveAssistantIdentity(resp, providers, models, combos)
+            }
             MinimalCard(
                 modifier = Modifier.width(280.dp),
                 contentPadding = PaddingValues(14.dp)
@@ -1375,13 +1624,39 @@ private fun MinimalComparisonRow(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = resp.modelId.substringAfterLast("/"),
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                        color = SoftIndigo,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Sparkles,
+                                contentDescription = "AI Responder",
+                                tint = SoftIndigo,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = identity.modelDisplayName,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = SoftIndigo,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                        }
+                        Text(
+                            text = if (resp.isStreaming) "${identity.providerDisplayName} · Responding…" else "${identity.providerDisplayName} · ${identity.rawModelId.substringAfterLast("/")}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (resp.isStreaming) CyberCyan else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Icon(
                         imageVector = LucideIcons.Copy,
                         contentDescription = "Copy",

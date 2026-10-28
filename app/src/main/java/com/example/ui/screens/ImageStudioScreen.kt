@@ -83,6 +83,9 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
+/**
+ * Studio screen for text-to-image, image-to-image, and OmniRoute image combo generation.
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ImageStudioScreen(
@@ -112,10 +115,18 @@ fun ImageStudioScreen(
     onAddManualModel: (String, String) -> Unit,
     onApproveCleartextHostFromError: (String) -> Unit,
     onDismissError: () -> Unit,
-    onOpenProviderSettings: () -> Unit
+    onOpenProviderSettings: () -> Unit,
+    onUpsertOmniRouteCombo: (
+        rawId: String,
+        displayName: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String
+    ) -> Unit = { _, _, _, _, _ -> }
 ) {
     val clipboardManager = LocalClipboardManager.current
     var showImageModelPicker by rememberSaveable { mutableStateOf(false) }
+    var showComboBuilderDialog by rememberSaveable { mutableStateOf(false) }
     var showAdvancedControls by rememberSaveable { mutableStateOf(false) }
 
     val imageProviders = remember(providers) {
@@ -150,10 +161,24 @@ fun ImageStudioScreen(
         onAttachSourceImage(uri?.toString())
     }
 
+    if (showComboBuilderDialog) {
+        OmniRouteComboBuilderDialog(
+            initialCombo = null,
+            defaultModality = "IMAGE",
+            availableModels = models,
+            onDismiss = { showComboBuilderDialog = false },
+            onSave = { rawId, displayName, _, strategy, targetModels, description ->
+                onUpsertOmniRouteCombo(rawId, displayName, strategy, targetModels, description)
+                showComboBuilderDialog = false
+            }
+        )
+    }
+
     if (showImageModelPicker) {
         ImageModelPickerSheet(
             providers = imageProviders,
             models = models,
+            omniRouteCombos = uiState.omniRouteCombos,
             selectedProviderId = selectedProvider?.id,
             selectedModelId = activeModelId,
             onSelect = { provId, modId ->
@@ -164,6 +189,10 @@ fun ImageStudioScreen(
                 onAddManualModel(provId, modId)
                 onSelectProviderAndModel(provId, modId)
                 showImageModelPicker = false
+            },
+            onNewImageCombo = {
+                showImageModelPicker = false
+                showComboBuilderDialog = true
             },
             onDismiss = { showImageModelPicker = false }
         )
@@ -216,32 +245,45 @@ fun ImageStudioScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    onClick = { showImageModelPicker = true },
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier.testTag("image_model_selector_chip")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        onClick = { showImageModelPicker = true },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.testTag("image_model_selector_chip")
                     ) {
-                        Text(
-                            text = activeModelId.substringAfterLast("/"),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Icon(
-                            imageVector = LucideIcons.ChevronDown,
-                            contentDescription = "Select Model",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = activeModelId.substringAfterLast("/"),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = LucideIcons.ChevronDown,
+                                contentDescription = "Select Model",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
+
+                    MinimalChip(
+                        label = "+ Combo",
+                        selected = false,
+                        onClick = { showComboBuilderDialog = true },
+                        testTag = "image_studio_new_combo_button"
+                    )
                 }
 
                 MinimalChip(
@@ -701,10 +743,12 @@ private fun ImageInspectorDialog(
 private fun ImageModelPickerSheet(
     providers: List<ProviderInstanceEntity>,
     models: List<ModelDescriptorEntity>,
+    omniRouteCombos: List<com.example.data.provider.OmniRouteComboDefinition> = emptyList(),
     selectedProviderId: String?,
     selectedModelId: String,
     onSelect: (String, String) -> Unit,
     onAddCustomModel: (String, String) -> Unit,
+    onNewImageCombo: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -713,14 +757,33 @@ private fun ImageModelPickerSheet(
     }
     var customModelInput by rememberSaveable { mutableStateOf("") }
 
-    val providerModels = remember(models, activeProvId, providers) {
+    val providerModels = remember(models, activeProvId, providers, omniRouteCombos) {
         val dbModels = models.filter {
             it.providerInstanceId == activeProvId &&
                 (CapabilityTag.IMAGE in it.capabilitySet() || it.modelId.contains("flux", true) ||
                     it.modelId.contains("dall-e", true) || it.modelId.contains("sd", true) ||
                     it.modelId.contains("imagen", true) || it.modelId.contains("stable", true) ||
                     it.modelId.contains("image", true))
+        }.toMutableList()
+
+        if (activeProvId.contains("omniroute", ignoreCase = true)) {
+            val seen = dbModels.map { it.modelId }.toMutableSet()
+            omniRouteCombos.filter { it.modality.equals("IMAGE", ignoreCase = true) }.forEach { combo ->
+                if (seen.add(combo.id)) {
+                    dbModels.add(
+                        0,
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = activeProvId,
+                            rawModelId = combo.id,
+                            displayNameOverride = combo.displayName,
+                            explicitCombo = true,
+                            explicitCapabilities = setOf(CapabilityTag.IMAGE)
+                        )
+                    )
+                }
+            }
         }
+
         if (dbModels.isNotEmpty()) {
             dbModels
         } else {
@@ -746,10 +809,22 @@ private fun ImageModelPickerSheet(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Image Model",
-                style = MaterialTheme.typography.titleLarge
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Image Model & Combos",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                MinimalButton(
+                    text = "+ Image Combo",
+                    onClick = onNewImageCombo,
+                    filled = true,
+                    testTag = "image_sheet_new_combo_button"
+                )
+            }
 
             Row(
                 modifier = Modifier
@@ -800,6 +875,7 @@ private fun ImageModelPickerSheet(
             ) {
                 items(providerModels, key = { "${it.providerInstanceId}:${it.modelId}" }) { mod ->
                     val isSelected = mod.providerInstanceId == selectedProviderId && mod.modelId == selectedModelId
+                    val comboDef = omniRouteCombos.firstOrNull { it.id.equals(mod.modelId, ignoreCase = true) }
                     Surface(
                         onClick = { onSelect(mod.providerInstanceId, mod.modelId) },
                         shape = RoundedCornerShape(12.dp),
@@ -818,14 +894,38 @@ private fun ImageModelPickerSheet(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = mod.displayName,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    if (mod.isCombo || comboDef != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = SoftIndigo.copy(alpha = 0.16f)
+                                        ) {
+                                            Text(
+                                                text = if (comboDef != null) "COMBO · ${comboDef.strategy}" else "COMBO",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = SoftIndigo,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
-                                    text = mod.displayName,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    text = mod.modelId,
+                                    text = if (comboDef != null && comboDef.targetModels.isNotEmpty()) {
+                                        "${mod.modelId} → ${comboDef.targetModels.joinToString(" → ")}"
+                                    } else {
+                                        mod.modelId
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             if (isSelected) {

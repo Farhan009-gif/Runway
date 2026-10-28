@@ -472,6 +472,17 @@ fun ModelPickerBottomSheet(
     onAddManualModel: (providerId: String, modelId: String, isCombo: Boolean) -> Unit,
     onFetchModelsForProvider: (ProviderInstanceEntity) -> Unit = {},
     isFetchingProviderId: String? = null,
+    omniRouteCombos: List<com.example.data.provider.OmniRouteComboDefinition> = emptyList(),
+    onUpsertCustomCombo: (
+        rawId: String,
+        displayName: String,
+        modality: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String,
+        additionalProviderId: String?
+    ) -> Unit = { _, _, _, _, _, _, _ -> },
+    onDeleteCustomCombo: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -784,6 +795,7 @@ fun BadgePill(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             softWrap = false,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
         )
     }

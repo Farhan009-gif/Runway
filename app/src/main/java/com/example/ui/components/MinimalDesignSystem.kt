@@ -731,14 +731,17 @@ fun MinimalSectionHeader(
     trailing: (@Composable () -> Unit)? = null
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = if (trailing != null) modifier.fillMaxWidth() else modifier,
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = if (trailing != null) Modifier.weight(1f, fill = false) else Modifier
         )
         if (trailing != null) {
             trailing()
@@ -831,6 +834,7 @@ fun MinimalButton(
                 style = MaterialTheme.typography.bodyMedium,
                 color = contentColor,
                 maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis
             )
         }
@@ -882,6 +886,7 @@ fun MinimalChip(
                 style = MaterialTheme.typography.bodySmall,
                 color = textColor,
                 maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis
             )
             if (trailingIcon != null) {

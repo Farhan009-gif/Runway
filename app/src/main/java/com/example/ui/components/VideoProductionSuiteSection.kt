@@ -483,7 +483,8 @@ fun VideoProductionSuiteSection(
                     ) {
                         Text(
                             text = "AI Noise/Reverb Removal & Contextual SFX",
-                            style = MaterialTheme.typography.bodySmall
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
                         )
                         Switch(
                             checked = state.audioConfig.aiNoiseReductionEnabled,
@@ -681,7 +682,8 @@ fun VideoProductionSuiteSection(
                         Text(
                             text = "Automated Quality Assurance & Fast Preview",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
                         )
                         OutlinedButton(
                             onClick = { manager.runQualityAssuranceAudit() },

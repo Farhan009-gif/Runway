@@ -5,6 +5,35 @@ plugins {
     alias(libs.plugins.secrets)
 }
 
+val kspAwtSafeUncaughtHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
+    val isBenignKspAwtNpe = thread.name.startsWith("AWT-EventQueue") &&
+        throwable is NullPointerException &&
+        (throwable.message?.contains("ksp.com.intellij.openapi.application.Application") == true ||
+            throwable.stackTrace.any {
+                it.className.startsWith("ksp.com.intellij.") ||
+                    it.className.contains("BinaryFileTypeDecompilers")
+            })
+    if (!isBenignKspAwtNpe) {
+        System.err.print("Exception in thread \"${thread.name}\" ")
+        throwable.printStackTrace(System.err)
+    }
+}
+
+fun installKspAwtExceptionGuard() {
+    System.setProperty("java.awt.headless", "true")
+    Thread.setDefaultUncaughtExceptionHandler(kspAwtSafeUncaughtHandler)
+    Thread.getAllStackTraces().keys
+        .filter { it.name.startsWith("AWT-EventQueue") }
+        .forEach { it.uncaughtExceptionHandler = kspAwtSafeUncaughtHandler }
+}
+
+installKspAwtExceptionGuard()
+
+tasks.matching { it.name.startsWith("ksp") }.configureEach {
+    doFirst { installKspAwtExceptionGuard() }
+    doLast { installKspAwtExceptionGuard() }
+}
+
 android {
     namespace = "com.example"
     compileSdk = 36

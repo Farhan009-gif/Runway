@@ -870,7 +870,8 @@ fun ImageProductionSuiteSection(
                         Text(
                             text = "Automated Image Quality Assurance",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
                         )
                         OutlinedButton(
                             onClick = { manager.runQualityAssuranceAudit() },

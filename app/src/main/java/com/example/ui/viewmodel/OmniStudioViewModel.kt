@@ -783,7 +783,8 @@ class OmniStudioViewModel(
         strategy: String,
         targetModels: List<String>,
         description: String,
-        selectInStudio: Boolean = false
+        selectInStudio: Boolean = false,
+        additionalProviderId: String? = null
     ) {
         viewModelScope.launch {
             val combo = repository.upsertOmniRouteCustomCombo(
@@ -792,15 +793,25 @@ class OmniStudioViewModel(
                 modality = modality,
                 strategy = strategy,
                 targetModels = targetModels,
-                description = description
+                description = description,
+                additionalProviderId = additionalProviderId
             )
+            val modUpper = combo.modality.uppercase()
+            val omniProvId = providers.value.firstOrNull {
+                it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
+            }?.id ?: "provider_omniroute_default"
+            val targetProvId = additionalProviderId?.takeIf { it.isNotBlank() } ?: omniProvId
+
+            if (selectInStudio && modUpper == "CHAT") {
+                switchActiveConversationModel(targetProvId, combo.id)
+            }
+
             _uiState.update { state ->
-                val modUpper = combo.modality.uppercase()
                 state.copy(
                     omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value,
-                    selectedVideoProviderId = if (selectInStudio && modUpper == "VIDEO") "provider_omniroute_default" else state.selectedVideoProviderId,
+                    selectedVideoProviderId = if (selectInStudio && modUpper == "VIDEO") targetProvId else state.selectedVideoProviderId,
                     selectedVideoModelId = if (selectInStudio && modUpper == "VIDEO") combo.id else state.selectedVideoModelId,
-                    selectedImageProviderId = if (selectInStudio && modUpper == "IMAGE") "provider_omniroute_default" else state.selectedImageProviderId,
+                    selectedImageProviderId = if (selectInStudio && modUpper == "IMAGE") targetProvId else state.selectedImageProviderId,
                     selectedImageModelId = if (selectInStudio && modUpper == "IMAGE") combo.id else state.selectedImageModelId,
                     statusToast = "Saved OmniRoute combo: ${combo.id} (${combo.modality})"
                 )
@@ -2897,10 +2908,25 @@ class OmniStudioViewModel(
         allowAutoFallback: Boolean = true
     ) {
         val startTime = System.currentTimeMillis()
-        val apiKey = repository.secretVault.getApiKey(provider.id)
+        val matchedCombo = EmbeddedOmniRouteServer.findCombo(modelId)
+        val rawProviderKey = repository.secretVault.getApiKey(provider.id)
+        val effectiveProvider = if (matchedCombo != null &&
+            provider.presetEnum() != ProviderPresetType.OMNIROUTE &&
+            !provider.baseUrl.contains("20128") &&
+            rawProviderKey.isBlank()
+        ) {
+            providers.value.firstOrNull {
+                it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
+            } ?: provider
+        } else {
+            provider
+        }
+        val apiKey = repository.secretVault.getApiKey(effectiveProvider.id)
         val modelDescriptor = models.value.firstOrNull {
+            it.providerInstanceId == effectiveProvider.id && it.modelId == modelId
+        } ?: models.value.firstOrNull {
             it.providerInstanceId == provider.id && it.modelId == modelId
-        } ?: ModelCapabilityRegistry.buildDescriptor(provider.id, modelId)
+        } ?: ModelCapabilityRegistry.buildDescriptor(effectiveProvider.id, modelId)
 
         // Resolve active SKILL.md instruction packs for this conversation & prompt
         val latestUserPrompt = payloadMessages.lastOrNull { it.role.equals("user", ignoreCase = true) }?.content.orEmpty()
@@ -3007,7 +3033,7 @@ class OmniStudioViewModel(
             val turnToolCalls = mutableListOf<ModelToolCallRequest>()
 
             val request = ChatCompletionRequest(
-                provider = provider,
+                provider = effectiveProvider,
                 apiKey = apiKey,
                 modelId = modelId,
                 messages = workingPayloadMessages.toList(),

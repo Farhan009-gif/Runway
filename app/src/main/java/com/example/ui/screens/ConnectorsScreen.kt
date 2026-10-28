@@ -1046,7 +1046,10 @@ private fun ConnectorToolPolicyCard(
                                 fontFamily = JetBrainsMonoFontFamily,
                                 fontWeight = FontWeight.SemiBold
                             ),
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         BadgePill(
                             text = if (isWriteOrDelete) "Write / Delete" else "Read-only",
