@@ -1187,7 +1187,7 @@ fun TerminalAndHealthBottomSheet(
                         )
                     }
                     Text(
-                        text = "Localhost daemon (127.0.0.1:20128) • Upstream Model Verifier",
+                        text = "Localhost daemon (localhost:20128) • Website & Upstream Model Verifier",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1217,7 +1217,7 @@ fun TerminalAndHealthBottomSheet(
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp)
                             )
-                            Text("Terminal (127.0.0.1)", style = MaterialTheme.typography.labelMedium)
+                            Text("Terminal (localhost:20128)", style = MaterialTheme.typography.labelMedium)
                         }
                     },
                     modifier = Modifier.testTag("tab_omniroute_terminal")
@@ -1241,6 +1241,7 @@ fun TerminalAndHealthBottomSheet(
             }
 
             if (activeTab == 0) {
+                val context = androidx.compose.ui.platform.LocalContext.current
                 // TAB 0: Interactive Terminal
                 // Server Status Banner
                 Card(
@@ -1271,17 +1272,38 @@ fun TerminalAndHealthBottomSheet(
                                     color = if (serverStatus.isListening) EmeraldConnected else CoralError
                                 )
                                 BadgePill(
-                                    text = "Port ${serverStatus.port}",
+                                    text = "localhost:${serverStatus.port}",
                                     color = if (serverStatus.isListening) EmeraldConnected else CoralError
                                 )
                             }
                             Text(
-                                text = "Base URL: http://127.0.0.1:${serverStatus.port}/v1 • Served ${serverStatus.requestCount} reqs",
+                                text = "Base URL: http://localhost:${serverStatus.port}/v1 • Web: http://localhost:${serverStatus.port} • Served ${serverStatus.requestCount} reqs",
                                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (!serverStatus.isListening) {
+                                        onStartLocalhost()
+                                    }
+                                    runCatching {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse("http://localhost:${serverStatus.port}")
+                                        )
+                                        context.startActivity(intent)
+                                    }
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = CyberCyan),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(32.dp)
+                                    .testTag("open_omniroute_web_button")
+                            ) {
+                                Text("Open Web", style = MaterialTheme.typography.labelSmall)
+                            }
                             if (serverStatus.isListening) {
                                 OutlinedButton(
                                     onClick = onStopLocalhost,
@@ -1315,8 +1337,11 @@ fun TerminalAndHealthBottomSheet(
                     val quickCmds = listOf(
                         "omniroute start" to "Start",
                         "omniroute status" to "Status",
-                        "curl http://127.0.0.1:20128/health" to "curl health",
-                        "curl http://127.0.0.1:20128/v1/models" to "curl /models",
+                        "omniroute combos" to "Combos",
+                        "omniroute video Cyberpunk neon city" to "Test Video",
+                        "curl http://localhost:20128/v1/combos" to "curl /combos",
+                        "curl http://localhost:20128/v1/models" to "curl /models",
+                        "curl http://localhost:20128/health" to "curl health",
                         "help" to "Help",
                         "clear" to "Clear"
                     )

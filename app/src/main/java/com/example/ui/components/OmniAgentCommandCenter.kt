@@ -366,7 +366,7 @@ fun OmniAutopilotScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "127.0.0.1:20128",
+                                    text = "localhost:20128",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

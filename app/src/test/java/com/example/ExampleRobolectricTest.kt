@@ -843,6 +843,76 @@ class ExampleRobolectricTest {
 
         db.close()
     }
+
+    @Test
+    fun omniRouteGateway_supportsVideoGenerationModelsAndCustomCombos() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, OmniDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val dao = db.omniDao()
+        val vault = TinkSecretVault(context)
+        val repo = com.example.data.repository.OmniRepository(context, dao, vault)
+
+        repo.ensureDefaultPresetsSeeded()
+        val serverStatus = com.example.data.provider.EmbeddedOmniRouteServer.startServer(20128)
+        assertTrue("Embedded OmniRoute daemon should listen on 20128", serverStatus.isListening)
+
+        // 1. Verify custom video combo creation & persistence
+        val customCombo = repo.upsertOmniRouteCustomCombo(
+            rawId = "omniroute/my-scifi-director",
+            displayName = "My Sci-Fi Director Combo",
+            modality = "VIDEO",
+            strategy = "FALLBACK_CHAIN",
+            targetModels = listOf("omniroute/wan-2.1-t2v", "omniroute/kling-v1.6-pro", "omniroute/veo-2-cinema"),
+            description = "Custom video combo for sci-fi scenes"
+        )
+        assertEquals("omniroute/my-scifi-director", customCombo.id)
+        assertEquals("VIDEO", customCombo.modality)
+
+        val modelsInDb = dao.getModelsForProviderOnce("provider_omniroute_default")
+        val comboDescriptor = modelsInDb.firstOrNull { it.modelId == "omniroute/my-scifi-director" }
+        assertTrue("Custom video combo should be persisted in Room models catalog", comboDescriptor != null)
+        assertTrue("Custom video combo should be marked isCombo", comboDescriptor!!.isCombo)
+        assertTrue(
+            "Custom video combo should have VIDEO capability",
+            com.example.data.local.CapabilityTag.VIDEO in comboDescriptor.capabilitySet()
+        )
+
+        // 2. Verify video generation through OmniRoute gateway using the custom combo
+        val omniProvider = dao.getProviderById("provider_omniroute_default")!!
+        val openAiCompat = OpenAICompatibleProvider(OkHttpClient())
+        val submitResult = openAiCompat.submitVideoGeneration(
+            com.example.data.provider.VideoGenerationRequest(
+                provider = omniProvider,
+                apiKey = "",
+                modelId = "omniroute/my-scifi-director",
+                prompt = "Cyberpunk neon city in rain with flying cars",
+                aspectRatio = "16:9",
+                resolution = "720p",
+                durationSeconds = 5
+            )
+        )
+        assertTrue("Video generation submission to OmniRoute should succeed: ${submitResult.exceptionOrNull()}", submitResult.isSuccess)
+        val submission = submitResult.getOrThrow()
+        assertEquals("COMPLETED", submission.status)
+        assertTrue("Video URL should be returned", !submission.videoUrl.isNullOrBlank())
+        assertTrue("Video URL should point to localhost:20128 MP4 endpoint", submission.videoUrl!!.contains("localhost:20128/v1/videos/media/"))
+
+        // 3. Verify the MP4 endpoint serves valid MP4 bytes
+        val mp4Req = okhttp3.Request.Builder().url(submission.videoUrl!!).get().build()
+        OkHttpClient().newCall(mp4Req).execute().use { resp ->
+            assertTrue("MP4 file download should return 200 OK", resp.isSuccessful)
+            val bytes = resp.body?.bytes() ?: ByteArray(0)
+            assertTrue("MP4 file should be non-empty", bytes.size >= 32)
+            // Bytes 4..7 of an ISO Base Media File (MP4) are 'ftyp'
+            val boxType = String(bytes.sliceArray(4..7), Charsets.US_ASCII)
+            assertEquals("ftyp", boxType)
+        }
+
+        db.close()
+    }
 }
+
 
 

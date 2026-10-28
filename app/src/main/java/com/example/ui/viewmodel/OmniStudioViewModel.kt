@@ -202,8 +202,8 @@ data class OmniUiState(
     val isGeneratingImage: Boolean = false,
     val inspectingImage: GeneratedImageEntity? = null,
     // Phase 4: Async Video Generation Studio & Video Gallery state
-    val selectedVideoProviderId: String = "provider_gemini_default",
-    val selectedVideoModelId: String = "veo-2.0-generate-001",
+    val selectedVideoProviderId: String = "provider_omniroute_default",
+    val selectedVideoModelId: String = "omniroute/video-combo",
     val videoPrompt: String = "",
     val videoNegativePrompt: String = "",
     val videoAspectRatio: String = "16:9",
@@ -233,12 +233,13 @@ data class OmniUiState(
     val pendingToolApproval: PendingToolApprovalRequest? = null,
     val activeToolLoopStatus: String? = null,
     val omniRouteTerminalLogs: List<String> = listOf(
-        "OmniRoute Embedded Terminal v2.4 (Android Localhost Daemon)",
-        "Type 'omniroute start', 'omniroute status', 'curl http://127.0.0.1:20128/health', or any shell command."
+        "OmniRoute Embedded Terminal v2.5 (Android Localhost Daemon)",
+        "Type 'omniroute start', 'omniroute status', 'omniroute combos', 'omniroute video <prompt>', or 'curl http://localhost:20128/health'."
     ),
     val isOmniRouteTerminalRunning: Boolean = false,
     val showTerminalAndHealthSheet: Boolean = false,
     val localhostServerStatus: LocalhostServerStatus = LocalhostServerStatus(),
+    val omniRouteCombos: List<com.example.data.provider.OmniRouteComboDefinition> = emptyList(),
     val modelHealthByKey: Map<String, ModelHealthRecord> = emptyMap(),
     val isScanningModelsHealth: Boolean = false,
     val latencyBenchmarkHistory: List<LatencyBenchmarkSample> = emptyList(),
@@ -388,6 +389,11 @@ class OmniStudioViewModel(
         viewModelScope.launch {
             EmbeddedOmniRouteServer.terminalLinesFlow.collect { lines ->
                 _uiState.update { it.copy(omniRouteTerminalLogs = lines) }
+            }
+        }
+        viewModelScope.launch {
+            EmbeddedOmniRouteServer.combosFlow.collect { combos ->
+                _uiState.update { it.copy(omniRouteCombos = combos) }
             }
         }
         viewModelScope.launch {
@@ -735,9 +741,9 @@ class OmniStudioViewModel(
             }
             if (omniProv != null) {
                 val updated = omniProv.copy(
-                    baseUrl = "http://127.0.0.1:20128/v1",
+                    baseUrl = "http://localhost:20128/v1",
                     defaultChatModelId = "ddgw/gpt-4o-mini",
-                    lastTestStatus = "Listening on http://127.0.0.1:20128/v1"
+                    lastTestStatus = "Listening on http://localhost:20128/v1"
                 )
                 dao.upsertProvider(updated)
                 repository.sanitizeAndVerifyOmniRouteTerminal(updated.id)
@@ -747,14 +753,14 @@ class OmniStudioViewModel(
                         providerHealthById = state.providerHealthById + (updated.id to ProviderHealth.Healthy(latencyMs = 3L)),
                         activeError = null,
                         deduplicatedBanner = null,
-                        statusToast = if (status.isListening) "OmniRoute started on http://127.0.0.1:20128/v1" else status.lastRequestSummary
+                        statusToast = if (status.isListening) "OmniRoute started on http://localhost:20128/v1" else status.lastRequestSummary
                     )
                 }
             } else {
                 _uiState.update {
                     it.copy(
                         isOmniRouteTerminalRunning = false,
-                        statusToast = "OmniRoute running on http://127.0.0.1:20128/v1"
+                        statusToast = "OmniRoute running on http://localhost:20128/v1"
                     )
                 }
             }
@@ -766,6 +772,81 @@ class OmniStudioViewModel(
             EmbeddedOmniRouteServer.stopServer()
             _uiState.update {
                 it.copy(statusToast = "Stopped localhost:20128 server")
+            }
+        }
+    }
+
+    fun upsertOmniRouteCustomCombo(
+        rawId: String,
+        displayName: String,
+        modality: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String,
+        selectInStudio: Boolean = false
+    ) {
+        viewModelScope.launch {
+            val combo = repository.upsertOmniRouteCustomCombo(
+                rawId = rawId,
+                displayName = displayName,
+                modality = modality,
+                strategy = strategy,
+                targetModels = targetModels,
+                description = description
+            )
+            _uiState.update { state ->
+                val modUpper = combo.modality.uppercase()
+                state.copy(
+                    omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value,
+                    selectedVideoProviderId = if (selectInStudio && modUpper == "VIDEO") "provider_omniroute_default" else state.selectedVideoProviderId,
+                    selectedVideoModelId = if (selectInStudio && modUpper == "VIDEO") combo.id else state.selectedVideoModelId,
+                    selectedImageProviderId = if (selectInStudio && modUpper == "IMAGE") "provider_omniroute_default" else state.selectedImageProviderId,
+                    selectedImageModelId = if (selectInStudio && modUpper == "IMAGE") combo.id else state.selectedImageModelId,
+                    statusToast = "Saved OmniRoute combo: ${combo.id} (${combo.modality})"
+                )
+            }
+        }
+    }
+
+    fun deleteOmniRouteCustomCombo(comboId: String) {
+        viewModelScope.launch {
+            val removed = repository.deleteOmniRouteCustomCombo(comboId)
+            _uiState.update {
+                it.copy(
+                    omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value,
+                    statusToast = if (removed) "Deleted combo: $comboId" else "Combo reset or not found"
+                )
+            }
+        }
+    }
+
+    fun addCustomModelToProvider(
+        providerId: String,
+        rawModelId: String,
+        displayName: String = "",
+        modality: String = "VIDEO",
+        isCombo: Boolean = false,
+        selectInStudio: Boolean = false
+    ) {
+        viewModelScope.launch {
+            val trimmed = rawModelId.trim()
+            if (trimmed.isEmpty()) return@launch
+            val added = repository.addCustomModelToProvider(
+                providerId = providerId,
+                rawModelId = trimmed,
+                displayName = displayName,
+                modality = modality,
+                isCombo = isCombo
+            )
+            _uiState.update { state ->
+                val modUpper = modality.uppercase()
+                state.copy(
+                    selectedVideoProviderId = if (selectInStudio && modUpper == "VIDEO") providerId else state.selectedVideoProviderId,
+                    selectedVideoModelId = if (selectInStudio && modUpper == "VIDEO") added.modelId else state.selectedVideoModelId,
+                    selectedImageProviderId = if (selectInStudio && modUpper == "IMAGE") providerId else state.selectedImageProviderId,
+                    selectedImageModelId = if (selectInStudio && modUpper == "IMAGE") added.modelId else state.selectedImageModelId,
+                    statusToast = "Added ${modality.lowercase()} model: ${added.displayName}"
+                )
             }
         }
     }
@@ -789,7 +870,7 @@ class OmniStudioViewModel(
                     it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
                 }
                 if (omniProv != null) {
-                    dao.upsertProvider(omniProv.copy(baseUrl = "http://127.0.0.1:20128/v1"))
+                    dao.upsertProvider(omniProv.copy(baseUrl = "http://localhost:20128/v1"))
                     _uiState.update { state ->
                         state.copy(
                             providerHealthById = state.providerHealthById + (omniProv.id to ProviderHealth.Healthy(latencyMs = 3L))

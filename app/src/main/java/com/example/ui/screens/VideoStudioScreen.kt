@@ -116,11 +116,19 @@ fun VideoStudioScreen(
     onAddManualModel: (String, String) -> Unit,
     onApproveCleartextHostFromError: (String) -> Unit,
     onDismissError: () -> Unit,
-    onPublishToYouTube: (VideoJobEntity) -> Unit = {}
+    onPublishToYouTube: (VideoJobEntity) -> Unit = {},
+    onUpsertOmniRouteCombo: (
+        rawId: String,
+        displayName: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String
+    ) -> Unit = { _, _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     var showVideoModelPicker by rememberSaveable { mutableStateOf(false) }
+    var showComboBuilderDialog by rememberSaveable { mutableStateOf(false) }
     var showAdvancedControls by rememberSaveable { mutableStateOf(false) }
 
     var hasNotificationPermission by remember {
@@ -174,10 +182,23 @@ fun VideoStudioScreen(
         )
     }
 
+    if (showComboBuilderDialog) {
+        OmniRouteComboBuilderDialog(
+            initialCombo = null,
+            defaultModality = "VIDEO",
+            onDismiss = { showComboBuilderDialog = false },
+            onSave = { rawId, displayName, _, strategy, targetModels, description ->
+                onUpsertOmniRouteCombo(rawId, displayName, strategy, targetModels, description)
+                showComboBuilderDialog = false
+            }
+        )
+    }
+
     if (showVideoModelPicker) {
         VideoModelPickerSheet(
             providers = videoProviders,
             models = models,
+            omniRouteCombos = uiState.omniRouteCombos,
             selectedProviderId = selectedProvider?.id,
             selectedModelId = activeModelId,
             onSelect = { provId, modId ->
@@ -188,6 +209,10 @@ fun VideoStudioScreen(
                 onAddManualModel(provId, modId)
                 onSelectProviderAndModel(provId, modId)
                 showVideoModelPicker = false
+            },
+            onNewVideoCombo = {
+                showVideoModelPicker = false
+                showComboBuilderDialog = true
             },
             onDismiss = { showVideoModelPicker = false }
         )
@@ -227,32 +252,45 @@ fun VideoStudioScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    onClick = { showVideoModelPicker = true },
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier.testTag("video_model_selector_chip")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        onClick = { showVideoModelPicker = true },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.testTag("video_model_selector_chip")
                     ) {
-                        Text(
-                            text = activeModelId.substringAfterLast("/"),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Icon(
-                            imageVector = LucideIcons.ChevronDown,
-                            contentDescription = "Select Video Model",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = activeModelId.substringAfterLast("/"),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = LucideIcons.ChevronDown,
+                                contentDescription = "Select Video Model",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
+
+                    MinimalChip(
+                        label = "+ Combo",
+                        selected = false,
+                        onClick = { showComboBuilderDialog = true },
+                        testTag = "video_studio_new_combo_button"
+                    )
                 }
 
                 MinimalChip(
@@ -724,10 +762,12 @@ private fun VideoPlayerInspectorDialog(
 private fun VideoModelPickerSheet(
     providers: List<ProviderInstanceEntity>,
     models: List<ModelDescriptorEntity>,
+    omniRouteCombos: List<com.example.data.provider.OmniRouteComboDefinition>,
     selectedProviderId: String?,
     selectedModelId: String,
     onSelect: (String, String) -> Unit,
     onAddCustomModel: (String, String) -> Unit,
+    onNewVideoCombo: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -736,7 +776,7 @@ private fun VideoModelPickerSheet(
     }
     var customModelInput by rememberSaveable { mutableStateOf("") }
 
-    val providerModels = remember(models, activeProvId, providers) {
+    val providerModels = remember(models, omniRouteCombos, activeProvId, providers) {
         val dbModels = models.filter {
             it.providerInstanceId == activeProvId &&
                 (CapabilityTag.VIDEO in it.capabilitySet() ||
@@ -747,8 +787,43 @@ private fun VideoModelPickerSheet(
                     it.modelId.contains("gen4", true) ||
                     it.modelId.contains("wan", true) ||
                     it.modelId.contains("kling", true) ||
+                    it.modelId.contains("hunyuan", true) ||
+                    it.modelId.contains("seedance", true) ||
+                    it.modelId.contains("cinema", true) ||
                     it.modelId.contains("sora", true))
+        }.toMutableList()
+
+        if (activeProvId.contains("omniroute", ignoreCase = true)) {
+            val seen = dbModels.map { it.modelId }.toMutableSet()
+            omniRouteCombos.filter { it.modality.equals("VIDEO", ignoreCase = true) }.forEach { combo ->
+                if (seen.add(combo.id)) {
+                    dbModels.add(
+                        0,
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = activeProvId,
+                            rawModelId = combo.id,
+                            displayNameOverride = combo.displayName,
+                            explicitCombo = true,
+                            explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                        )
+                    )
+                }
+            }
+            com.example.data.provider.EndpointUrlNormalizer.defaultOmniRouteVideoModels.forEach { (id, label) ->
+                if (seen.add(id)) {
+                    dbModels.add(
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = activeProvId,
+                            rawModelId = id,
+                            displayNameOverride = label,
+                            explicitCombo = id.contains("combo") || id.contains("director"),
+                            explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                        )
+                    )
+                }
+            }
         }
+
         if (dbModels.isNotEmpty()) {
             dbModels
         } else {
@@ -757,7 +832,8 @@ private fun VideoModelPickerSheet(
             listOf(
                 ModelCapabilityRegistry.buildDescriptor(
                     providerInstanceId = activeProvId,
-                    rawModelId = fallbackId
+                    rawModelId = fallbackId,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
                 )
             )
         }
@@ -774,10 +850,22 @@ private fun VideoModelPickerSheet(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Video Model",
-                style = MaterialTheme.typography.titleLarge
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Video Model & Combos",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                MinimalButton(
+                    text = "+ Video Combo",
+                    onClick = onNewVideoCombo,
+                    filled = true,
+                    testTag = "video_sheet_new_combo_button"
+                )
+            }
 
             Row(
                 modifier = Modifier
@@ -802,7 +890,7 @@ private fun VideoModelPickerSheet(
                 OutlinedTextField(
                     value = customModelInput,
                     onValueChange = { customModelInput = it },
-                    placeholder = { Text("Custom video model ID...", style = MaterialTheme.typography.labelSmall) },
+                    placeholder = { Text("Custom video model ID (e.g. omniroute/wan-2.1-t2v)...", style = MaterialTheme.typography.labelSmall) },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.weight(1f)
@@ -828,6 +916,7 @@ private fun VideoModelPickerSheet(
             ) {
                 items(providerModels, key = { "${it.providerInstanceId}:${it.modelId}" }) { mod ->
                     val isSelected = mod.providerInstanceId == selectedProviderId && mod.modelId == selectedModelId
+                    val comboDef = omniRouteCombos.firstOrNull { it.id.equals(mod.modelId, ignoreCase = true) }
                     Surface(
                         onClick = { onSelect(mod.providerInstanceId, mod.modelId) },
                         shape = RoundedCornerShape(12.dp),
@@ -846,14 +935,38 @@ private fun VideoModelPickerSheet(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = mod.displayName,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    if (mod.isCombo || comboDef != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = SoftIndigo.copy(alpha = 0.16f)
+                                        ) {
+                                            Text(
+                                                text = if (comboDef != null) "COMBO · ${comboDef.strategy}" else "COMBO",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = SoftIndigo,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
-                                    text = mod.displayName,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    text = mod.modelId,
+                                    text = if (comboDef != null) {
+                                        "${mod.modelId} → ${comboDef.targetModels.joinToString(" → ")}"
+                                    } else {
+                                        mod.modelId
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             if (isSelected) {

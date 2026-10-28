@@ -495,9 +495,81 @@ class OmniRepository(
                 ModelCapabilityRegistry.buildDescriptor(
                     providerInstanceId = omniId,
                     rawModelId = "omniroute/video-combo",
-                    displayNameOverride = "omniroute/video-combo (Video Router)",
+                    displayNameOverride = "OmniRoute Video Studio Combo (Auto Video Router)",
                     explicitCombo = true,
-                    preserveFavorite = true
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/cinema-director",
+                    displayNameOverride = "OmniRoute Cinema Director Combo (HD Motion)",
+                    explicitCombo = true,
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/wan-2.1-t2v",
+                    displayNameOverride = "Wan 2.1 Text-to-Video (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/kling-v1.6-pro",
+                    displayNameOverride = "Kling 1.6 Pro Video (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/luma-ray-2",
+                    displayNameOverride = "Luma Ray 2 Flash (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/veo-2-cinema",
+                    displayNameOverride = "Veo 2 Cinema (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/hunyuan-video",
+                    displayNameOverride = "HunyuanVideo HD (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/seedance-v1",
+                    displayNameOverride = "Seedance 1.0 Motion (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/gen4-turbo",
+                    displayNameOverride = "Runway Gen-4 Turbo (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/flux-schnell",
+                    displayNameOverride = "Flux.1 Schnell (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.IMAGE)
+                ),
+                ModelCapabilityRegistry.buildDescriptor(
+                    providerInstanceId = omniId,
+                    rawModelId = "omniroute/sdxl-lightning",
+                    displayNameOverride = "SDXL Lightning 4-Step (OmniRoute Gateway)",
+                    preserveFavorite = true,
+                    explicitCapabilities = setOf(CapabilityTag.IMAGE)
                 ),
                 ModelCapabilityRegistry.buildDescriptor(
                     providerInstanceId = geminiId,
@@ -553,9 +625,9 @@ class OmniRepository(
                 )
             )
         } else {
-            // Automatically sanitize all OmniRoute instances: purge browser-scraped (cfp/, dva/),
-            // unauthenticated OAuth/IDE (aug/, cu/, ws/, gh/, gc/, kr/, if/, cc/, cx/, qoder/),
-            // and image-only (aihorde/) models from Chat, and seed zero-config ddgw/* models.
+            // Automatically sanitize all OmniRoute instances: purge browser-scraped (cfp/, dva/)
+            // and unauthenticated OAuth/IDE (aug/, cu/, ws/, gh/, gc/, kr/, if/, cc/, cx/, qoder/) models,
+            // while ensuring all OmniRoute Chat models, Video models, Image models, and Custom Combos are present.
             val omniProviders = dao.getProvidersOnce().filter {
                 it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
             }
@@ -564,27 +636,18 @@ class OmniRepository(
                 val cleanModels = currentModels.filterNot {
                     EndpointUrlNormalizer.isBrowserScrapedOrOAuthIdeModel(it.modelId)
                 }
-                val cleanIds = cleanModels.map { it.modelId }.toSet()
-                val missingZeroConfig = EndpointUrlNormalizer.defaultWorkingOmniRouteModels
-                    .filter { it.first !in cleanIds }
-                    .map { (id, label) ->
-                        ModelCapabilityRegistry.buildDescriptor(
-                            providerInstanceId = omni.id,
-                            rawModelId = id,
-                            displayNameOverride = label,
-                            preserveFavorite = true
-                        )
-                    }
-                if (cleanModels.size != currentModels.size || missingZeroConfig.isNotEmpty()) {
+                val cleanIds = cleanModels.map { it.modelId.lowercase() }.toSet()
+                val requiredOmniModels = buildAllOmniRouteSeedModels(omni.id)
+                    .filter { it.modelId.lowercase() !in cleanIds }
+                if (cleanModels.size != currentModels.size || requiredOmniModels.isNotEmpty()) {
                     dao.deleteModelsForProvider(omni.id)
-                    dao.upsertModels(cleanModels + missingZeroConfig)
+                    dao.upsertModels(cleanModels + requiredOmniModels)
                 }
                 val needsDefaultFix = omni.defaultChatModelId.isBlank() ||
-                    omni.defaultChatModelId == "omniroute/auto-combo" ||
                     omni.defaultChatModelId.startsWith("auto/", ignoreCase = true) ||
                     EndpointUrlNormalizer.isBrowserScrapedOrOAuthIdeModel(omni.defaultChatModelId)
-                val migratedBaseUrl = if (omni.baseUrl.contains("192.168.1.100:20128")) {
-                    "http://127.0.0.1:20128/v1"
+                val migratedBaseUrl = if (omni.baseUrl.contains("192.168.1.100:20128") || omni.baseUrl.contains("127.0.0.1:20128")) {
+                    "http://localhost:20128/v1"
                 } else {
                     EndpointUrlNormalizer.normalizeOpenAiCompatibleBaseUrl(omni.baseUrl)
                 }
@@ -594,7 +657,7 @@ class OmniRepository(
                             displayName = if (omni.displayName == "OmniRoute (Default)") "OmniRoute" else omni.displayName,
                             baseUrl = migratedBaseUrl,
                             defaultChatModelId = if (needsDefaultFix) "ddgw/gpt-4o-mini" else omni.defaultChatModelId,
-                            lastTestStatus = "Connected (http://127.0.0.1:20128/v1)"
+                            lastTestStatus = "Connected (http://localhost:20128/v1)"
                         )
                     )
                 }
@@ -605,8 +668,7 @@ class OmniRepository(
                 for (conv in allConvs) {
                     if (conv.providerInstanceId in omniIds &&
                         (EndpointUrlNormalizer.isBrowserScrapedOrOAuthIdeModel(conv.modelId) ||
-                            conv.modelId.startsWith("auto/", ignoreCase = true) ||
-                            conv.modelId == "omniroute/auto-combo")
+                            conv.modelId.startsWith("auto/", ignoreCase = true))
                     ) {
                         dao.upsertConversation(conv.copy(modelId = "ddgw/gpt-4o-mini"))
                     }
@@ -873,9 +935,155 @@ class OmniRepository(
         result
     }
 
+    fun buildAllOmniRouteSeedModels(providerId: String): List<ModelDescriptorEntity> {
+        val list = mutableListOf<ModelDescriptorEntity>()
+        val seen = mutableSetOf<String>()
+
+        for (combo in EmbeddedOmniRouteServer.combosFlow.value) {
+            if (seen.add(combo.id.lowercase())) {
+                val cap = when (combo.modality.uppercase()) {
+                    "VIDEO" -> setOf(CapabilityTag.VIDEO)
+                    "IMAGE" -> setOf(CapabilityTag.IMAGE)
+                    else -> setOf(CapabilityTag.CHAT)
+                }
+                list.add(
+                    ModelCapabilityRegistry.buildDescriptor(
+                        providerInstanceId = providerId,
+                        rawModelId = combo.id,
+                        displayNameOverride = combo.displayName,
+                        explicitCombo = true,
+                        preserveFavorite = true,
+                        explicitCapabilities = cap
+                    )
+                )
+            }
+        }
+        for ((id, label) in EndpointUrlNormalizer.defaultWorkingOmniRouteModels) {
+            if (seen.add(id.lowercase())) {
+                list.add(
+                    ModelCapabilityRegistry.buildDescriptor(
+                        providerInstanceId = providerId,
+                        rawModelId = id,
+                        displayNameOverride = label,
+                        preserveFavorite = true,
+                        explicitCapabilities = setOf(CapabilityTag.CHAT)
+                    )
+                )
+            }
+        }
+        for ((id, label) in EndpointUrlNormalizer.defaultOmniRouteVideoModels) {
+            if (seen.add(id.lowercase())) {
+                list.add(
+                    ModelCapabilityRegistry.buildDescriptor(
+                        providerInstanceId = providerId,
+                        rawModelId = id,
+                        displayNameOverride = label,
+                        explicitCombo = id.contains("combo") || id.contains("director"),
+                        preserveFavorite = true,
+                        explicitCapabilities = setOf(CapabilityTag.VIDEO)
+                    )
+                )
+            }
+        }
+        for ((id, label) in EndpointUrlNormalizer.defaultOmniRouteImageModels) {
+            if (seen.add(id.lowercase())) {
+                list.add(
+                    ModelCapabilityRegistry.buildDescriptor(
+                        providerInstanceId = providerId,
+                        rawModelId = id,
+                        displayNameOverride = label,
+                        explicitCombo = id.contains("combo"),
+                        preserveFavorite = true,
+                        explicitCapabilities = setOf(CapabilityTag.IMAGE)
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    suspend fun upsertOmniRouteCustomCombo(
+        rawId: String,
+        displayName: String,
+        modality: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String = ""
+    ): com.example.data.provider.OmniRouteComboDefinition = withContext(Dispatchers.IO) {
+        val saved = EmbeddedOmniRouteServer.upsertCustomCombo(
+            rawId = rawId,
+            displayName = displayName,
+            modality = modality,
+            strategy = strategy,
+            targetModels = targetModels,
+            description = description
+        )
+        val omniProviders = dao.getProvidersOnce().filter {
+            it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
+        }
+        val cap = when (saved.modality.uppercase()) {
+            "VIDEO" -> setOf(CapabilityTag.VIDEO)
+            "IMAGE" -> setOf(CapabilityTag.IMAGE)
+            else -> setOf(CapabilityTag.CHAT)
+        }
+        for (prov in omniProviders) {
+            val descriptor = ModelCapabilityRegistry.buildDescriptor(
+                providerInstanceId = prov.id,
+                rawModelId = saved.id,
+                displayNameOverride = saved.displayName,
+                explicitCombo = true,
+                preserveFavorite = true,
+                explicitCapabilities = cap
+            )
+            dao.upsertModels(listOf(descriptor))
+        }
+        saved
+    }
+
+    suspend fun deleteOmniRouteCustomCombo(comboId: String): Boolean = withContext(Dispatchers.IO) {
+        val removed = EmbeddedOmniRouteServer.deleteCustomCombo(comboId)
+        val omniProviders = dao.getProvidersOnce().filter {
+            it.presetEnum() == ProviderPresetType.OMNIROUTE || it.baseUrl.contains("20128")
+        }
+        for (prov in omniProviders) {
+            val current = dao.getModelsForProviderOnce(prov.id)
+            val filtered = current.filterNot { it.modelId.equals(comboId.trim(), ignoreCase = true) }
+            if (filtered.size != current.size) {
+                dao.deleteModelsForProvider(prov.id)
+                dao.upsertModels(filtered)
+            }
+        }
+        removed
+    }
+
+    suspend fun addCustomModelToProvider(
+        providerId: String,
+        rawModelId: String,
+        displayName: String = "",
+        modality: String = "VIDEO",
+        isCombo: Boolean = false
+    ): ModelDescriptorEntity = withContext(Dispatchers.IO) {
+        val cleanId = rawModelId.trim()
+        val cap = when (modality.uppercase()) {
+            "VIDEO" -> setOf(CapabilityTag.VIDEO)
+            "IMAGE" -> setOf(CapabilityTag.IMAGE)
+            else -> setOf(CapabilityTag.CHAT)
+        }
+        val descriptor = ModelCapabilityRegistry.buildDescriptor(
+            providerInstanceId = providerId,
+            rawModelId = cleanId,
+            displayNameOverride = displayName.trim().ifEmpty { cleanId },
+            explicitCombo = isCombo,
+            preserveFavorite = true,
+            explicitCapabilities = cap
+        )
+        dao.upsertModels(listOf(descriptor))
+        descriptor
+    }
+
     suspend fun sanitizeAndVerifyOmniRouteTerminal(providerId: String? = null): List<String> = withContext(Dispatchers.IO) {
         val logs = mutableListOf<String>()
-        logs.add("$ omniroute-clean --purge-scraped --purge-oauth --lock-ddgw")
+        logs.add("$ omniroute-clean --purge-scraped --purge-oauth --sync-video-and-combos")
         val allProviders = dao.getProvidersOnce()
         val targetProviders = if (providerId != null) {
             allProviders.filter { it.id == providerId }
@@ -898,31 +1106,26 @@ class OmniRepository(
                 logs.add("[OK] 0 browser-scraped (cfp/, dva/) or unauthenticated OAuth (aug/, cu/, ws/, gh/, gc/) models present.")
             }
 
-            val existingCleanIds = kept.map { it.modelId }.toSet()
-            val zeroConfigModels = EndpointUrlNormalizer.defaultWorkingOmniRouteModels
-                .filter { it.first !in existingCleanIds }
-                .map { (id, label) ->
-                    ModelCapabilityRegistry.buildDescriptor(
-                        providerInstanceId = prov.id,
-                        rawModelId = id,
-                        displayNameOverride = label,
-                        preserveFavorite = true
-                    )
-                }
+            val existingCleanIds = kept.map { it.modelId.lowercase() }.toSet()
+            val seededOmniModels = buildAllOmniRouteSeedModels(prov.id)
+                .filter { it.modelId.lowercase() !in existingCleanIds }
 
-            val finalModels = (zeroConfigModels + kept).sortedWith(
+            val finalModels = (seededOmniModels + kept).sortedWith(
                 compareBy<ModelDescriptorEntity> {
                     EndpointUrlNormalizer.modelPriorityRank(it.modelId, it.isCombo)
                 }.thenBy { it.modelId }
             )
             dao.deleteModelsForProvider(prov.id)
             dao.upsertModels(finalModels)
-            logs.add("[SEED] Installed ${EndpointUrlNormalizer.defaultWorkingOmniRouteModels.size} zero-config DDGW models at Rank #1 (ddgw/gpt-4o-mini, ddgw/claude-3-haiku, ddgw/llama-3.3-70b, ddgw/o3-mini, ddgw/mistral-small).")
+            logs.add("[SEED] Synced ${EndpointUrlNormalizer.defaultWorkingOmniRouteModels.size} Chat models, ${EndpointUrlNormalizer.defaultOmniRouteVideoModels.size} Video models, and ${EmbeddedOmniRouteServer.combosFlow.value.size} Custom Combos.")
 
+            val preserveCurrentDefault = prov.defaultChatModelId.isNotBlank() &&
+                !EndpointUrlNormalizer.isBrowserScrapedOrOAuthIdeModel(prov.defaultChatModelId) &&
+                !prov.defaultChatModelId.startsWith("auto/", ignoreCase = true)
             val updatedProv = prov.copy(
                 baseUrl = normalizedBase,
-                defaultChatModelId = "ddgw/gpt-4o-mini",
-                lastTestStatus = "Clean Mode Ready (${finalModels.size} models)"
+                defaultChatModelId = if (preserveCurrentDefault) prov.defaultChatModelId else "ddgw/gpt-4o-mini",
+                lastTestStatus = "Gateway Ready (${finalModels.size} models • Video + Combos)"
             )
             dao.upsertProvider(updatedProv)
 
@@ -930,8 +1133,7 @@ class OmniRepository(
             var migratedConvs = 0
             for (c in convs) {
                 if (EndpointUrlNormalizer.isBrowserScrapedOrOAuthIdeModel(c.modelId) ||
-                    c.modelId.startsWith("auto/", ignoreCase = true) ||
-                    c.modelId == "omniroute/auto-combo"
+                    c.modelId.startsWith("auto/", ignoreCase = true)
                 ) {
                     dao.upsertConversation(c.copy(modelId = "ddgw/gpt-4o-mini"))
                     migratedConvs++
@@ -941,24 +1143,22 @@ class OmniRepository(
                 logs.add("[ROUTE] Migrated $migratedConvs active conversation(s) from broken sub-providers -> ddgw/gpt-4o-mini.")
             }
 
-            // Ensure embedded localhost server is running if targeting 127.0.0.1:20128
             if (updatedProv.baseUrl.contains("127.0.0.1:20128") || updatedProv.baseUrl.contains("localhost:20128")) {
                 val st = EmbeddedOmniRouteServer.startServer(20128)
                 logs.add("[LOCALHOST] http://${st.host}:${st.port}/v1 listening (${st.mode}).")
             }
 
-            // Live sync if gateway is reachable
             val syncResult = fetchAndPersistModels(updatedProv)
             syncResult.fold(
                 onSuccess = { synced ->
-                    logs.add("[LIVE] Gateway /v1/models reachable: ${synced.size} clean models active (Playwright & OAuth scrapers blocked).")
+                    logs.add("[LIVE] Gateway /v1/models reachable: ${synced.size} models active (Chat, Video Studio & Custom Combos enabled).")
                 },
                 onFailure = {
-                    logs.add("[OFFLINE-READY] Gateway not currently reachable on LAN, but local catalog is pre-locked to clean ddgw/* models with automatic fallback.")
+                    logs.add("[OFFLINE-READY] Local catalog pre-seeded with Chat, Video Generation, and Custom Combos.")
                 }
             )
         }
-        logs.add("[SUCCESS] OmniRoute Clean Mode active. Zero Chromium/Playwright or OAuth prompts will occur.")
+        logs.add("[SUCCESS] OmniRoute Gateway ready for Chat, Video Generation, and Custom Combos.")
         logs
     }
 

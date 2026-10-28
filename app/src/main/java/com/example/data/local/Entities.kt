@@ -21,7 +21,7 @@ enum class ProviderPresetType(
     OMNIROUTE(
         displayName = "OmniRoute Gateway",
         badgeShort = "OMNI",
-        defaultBaseUrl = "http://127.0.0.1:20128/v1",
+        defaultBaseUrl = "http://localhost:20128/v1",
         defaultCapabilities = setOf(CapabilityTag.CHAT, CapabilityTag.IMAGE, CapabilityTag.VIDEO),
         isOpenAiCompatible = true,
         phaseTag = "Localhost Gateway"

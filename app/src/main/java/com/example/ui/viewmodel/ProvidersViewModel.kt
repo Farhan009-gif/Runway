@@ -8,7 +8,10 @@ import com.example.data.local.ModelDescriptorEntity
 import com.example.data.local.OmniDao
 import com.example.data.local.ProviderInstanceEntity
 import com.example.data.local.ProviderPresetType
+import com.example.data.provider.EmbeddedOmniRouteServer
+import com.example.data.provider.LocalhostServerStatus
 import com.example.data.provider.ModelCapabilityRegistry
+import com.example.data.provider.OmniRouteComboDefinition
 import com.example.data.provider.ProviderHealth
 import com.example.data.repository.OmniRepository
 import com.example.data.security.TinkSecretVault
@@ -30,6 +33,8 @@ data class ProvidersUiState(
     val cipherPreviewsByProvider: Map<String, String> = emptyMap(),
     val vaultSecurityStatus: VaultSecurityStatus = VaultSecurityStatus(),
     val providerHealthById: Map<String, ProviderHealth> = emptyMap(),
+    val localhostServerStatus: LocalhostServerStatus = LocalhostServerStatus(),
+    val omniRouteCombos: List<OmniRouteComboDefinition> = emptyList(),
     val selectedFilter: String = "ALL", // "ALL", "CHAT", "IMAGE", "VIDEO", "LOCAL", "CLOUD"
     val searchQuery: String = "",
     val busyTestingProviderId: String? = null,
@@ -67,6 +72,7 @@ class ProvidersViewModel(
     init {
         scope.launch {
             repository.ensureDefaultPresetsSeeded()
+            EmbeddedOmniRouteServer.startServer(20128)
             loadInitialState()
 
             dao.observeProviders().collect { provs ->
@@ -79,12 +85,29 @@ class ProvidersViewModel(
                 _uiState.update { it.copy(models = mods) }
             }
         }
+        scope.launch {
+            EmbeddedOmniRouteServer.statusFlow.collect { st ->
+                _uiState.update { it.copy(localhostServerStatus = st) }
+            }
+        }
+        scope.launch {
+            EmbeddedOmniRouteServer.combosFlow.collect { combos ->
+                _uiState.update { it.copy(omniRouteCombos = combos) }
+            }
+        }
     }
 
     suspend fun loadInitialState() {
         val initialProvs = dao.getProvidersOnce()
         val initialMods = dao.getModelsOnce()
-        _uiState.update { it.copy(providers = initialProvs, models = initialMods) }
+        _uiState.update {
+            it.copy(
+                providers = initialProvs,
+                models = initialMods,
+                localhostServerStatus = EmbeddedOmniRouteServer.statusFlow.value,
+                omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value
+            )
+        }
         refreshVaultStatus()
         refreshMaskedKeys(initialProvs)
     }
@@ -371,6 +394,67 @@ class ProvidersViewModel(
             if (trimmed.isEmpty()) return@launch
             val added = repository.addManualModel(providerId, trimmed, isCombo)
             _uiState.update { it.copy(statusToast = "Added model: ${added.displayName}") }
+        }
+    }
+
+    fun addCustomModelToProvider(
+        providerId: String,
+        rawModelId: String,
+        displayName: String = "",
+        modality: String = "CHAT",
+        isCombo: Boolean = false
+    ) {
+        scope.launch {
+            val trimmed = rawModelId.trim()
+            if (trimmed.isEmpty()) return@launch
+            val added = repository.addCustomModelToProvider(
+                providerId = providerId,
+                rawModelId = trimmed,
+                displayName = displayName,
+                modality = modality,
+                isCombo = isCombo
+            )
+            _uiState.update {
+                it.copy(statusToast = "Added ${modality.lowercase()} model: ${added.displayName}")
+            }
+        }
+    }
+
+    fun upsertOmniRouteCustomCombo(
+        rawId: String,
+        displayName: String,
+        modality: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String
+    ) {
+        scope.launch {
+            val combo = repository.upsertOmniRouteCustomCombo(
+                rawId = rawId,
+                displayName = displayName,
+                modality = modality,
+                strategy = strategy,
+                targetModels = targetModels,
+                description = description
+            )
+            _uiState.update {
+                it.copy(
+                    omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value,
+                    statusToast = "Saved OmniRoute combo: ${combo.id} (${combo.modality})"
+                )
+            }
+        }
+    }
+
+    fun deleteOmniRouteCustomCombo(comboId: String) {
+        scope.launch {
+            val removed = repository.deleteOmniRouteCustomCombo(comboId)
+            _uiState.update {
+                it.copy(
+                    omniRouteCombos = EmbeddedOmniRouteServer.combosFlow.value,
+                    statusToast = if (removed) "Deleted combo: $comboId" else "Built-in combo reset or not found"
+                )
+            }
         }
     }
 

@@ -317,40 +317,67 @@ object ModelCapabilityRegistry {
         rawModelId: String,
         displayNameOverride: String? = null,
         explicitCombo: Boolean = false,
-        preserveFavorite: Boolean = false
+        preserveFavorite: Boolean = false,
+        explicitCapabilities: Set<CapabilityTag>? = null
     ): ModelDescriptorEntity {
         val lower = rawModelId.lowercase()
+        val registeredCombo = EmbeddedOmniRouteServer.findCombo(rawModelId)
         val isCombo = explicitCombo ||
+            registeredCombo != null ||
             lower.contains("combo") ||
             lower.contains("fallback") ||
             lower.contains("router") ||
-            lower.startsWith("omniroute/") ||
-            lower.startsWith("auto")
+            lower == "omniroute/auto-combo" ||
+            lower == "omniroute/coding-fallback" ||
+            lower == "omniroute/vision-pro" ||
+            lower == "omniroute/video-combo" ||
+            lower == "omniroute/cinema-director" ||
+            lower == "omniroute/flux-combo" ||
+            lower.startsWith("auto-")
 
         val caps = mutableSetOf<CapabilityTag>()
-        when {
-            lower.contains("sora") || lower.contains("veo") || lower.contains("runway") ||
-                lower.contains("luma") || lower.contains("kling") || lower.contains("wan") ||
-                lower.contains("video") || lower.contains("ray") -> {
-                caps.add(CapabilityTag.VIDEO)
+        if (!explicitCapabilities.isNullOrEmpty()) {
+            caps.addAll(explicitCapabilities)
+        } else if (registeredCombo != null) {
+            when (registeredCombo.modality.uppercase()) {
+                "VIDEO" -> caps.add(CapabilityTag.VIDEO)
+                "IMAGE" -> caps.add(CapabilityTag.IMAGE)
+                "ALL", "MULTIMODAL" -> {
+                    caps.add(CapabilityTag.CHAT)
+                    caps.add(CapabilityTag.IMAGE)
+                    caps.add(CapabilityTag.VIDEO)
+                }
+                else -> caps.add(CapabilityTag.CHAT)
             }
-            lower.startsWith("aihorde/") || lower.contains("dall-e") || lower.contains("flux") ||
-                lower.contains("sdxl") || lower.contains("stable-") || lower.contains("sd3") ||
-                lower.contains("imagen") || lower.contains("recraft") || lower.contains("image") ||
-                lower.contains("esrgan") || lower.contains("aura-sr") || lower.contains("upscale") ||
-                lower.contains("midjourney") || lower.contains("ideogram") || lower.contains("playground-v2") ||
-                lower.contains("kandinsky") || lower.contains("kolors") -> {
-                caps.add(CapabilityTag.IMAGE)
-            }
-            else -> {
-                caps.add(CapabilityTag.CHAT)
+        } else {
+            when {
+                lower.contains("sora") || lower.contains("veo") || lower.contains("runway") ||
+                    lower.contains("luma") || lower.contains("kling") || lower.contains("wan") ||
+                    lower.contains("video") || lower.contains("ray") || lower.contains("hunyuan") ||
+                    lower.contains("seedance") || lower.contains("cinema") || lower.contains("t2v") ||
+                    lower.contains("i2v") || lower.contains("gen3") || lower.contains("gen4") ||
+                    lower.contains("pika") || lower.contains("hailuo") || lower.contains("mochi") ||
+                    lower.contains("cogvideo") -> {
+                    caps.add(CapabilityTag.VIDEO)
+                }
+                lower.startsWith("aihorde/") || lower.contains("dall-e") || lower.contains("flux") ||
+                    lower.contains("sdxl") || lower.contains("stable-") || lower.contains("sd3") ||
+                    lower.contains("imagen") || lower.contains("recraft") || lower.contains("image") ||
+                    lower.contains("esrgan") || lower.contains("aura-sr") || lower.contains("upscale") ||
+                    lower.contains("midjourney") || lower.contains("ideogram") || lower.contains("playground-v2") ||
+                    lower.contains("kandinsky") || lower.contains("kolors") -> {
+                    caps.add(CapabilityTag.IMAGE)
+                }
+                else -> {
+                    caps.add(CapabilityTag.CHAT)
+                }
             }
         }
-        if (isCombo && !lower.contains("flux") && !lower.contains("video")) {
+        if (isCombo && caps.isEmpty()) {
             caps.add(CapabilityTag.CHAT)
         }
 
-        val supportsVision = isCombo ||
+        val supportsVision = (isCombo && caps.contains(CapabilityTag.CHAT)) ||
             lower.contains("gpt-4o") ||
             lower.contains("gpt-4.1") ||
             lower.contains("claude-3") ||
@@ -365,12 +392,15 @@ object ModelCapabilityRegistry {
         val isReasoningRestricted = lower.startsWith("o1-") || lower == "o1" || lower.startsWith("o3-")
 
         val (inCost, outCost) = estimatePricingPer1k(lower, isCombo)
+        val resolvedDisplayName = displayNameOverride?.takeIf { it.isNotBlank() }
+            ?: registeredCombo?.displayName?.takeIf { it.isNotBlank() }
+            ?: rawModelId
 
         return ModelDescriptorEntity(
             id = "$providerInstanceId:$rawModelId",
             providerInstanceId = providerInstanceId,
             modelId = rawModelId,
-            displayName = displayNameOverride?.takeIf { it.isNotBlank() } ?: rawModelId,
+            displayName = resolvedDisplayName,
             capabilitiesCsv = caps.joinToString(",") { it.name },
             supportsVision = supportsVision,
             supportsStreaming = true,

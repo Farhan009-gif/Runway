@@ -39,11 +39,22 @@ class OpenAICompatibleProvider(
         apiKey: String
     ): Result<List<ModelDescriptorEntity>> = listModels(provider, apiKey)
 
+    private suspend fun ensureLocalOmniRouteListening(baseUrl: String) {
+        if (baseUrl.contains("localhost:20128", ignoreCase = true) ||
+            baseUrl.contains("127.0.0.1:20128", ignoreCase = true)
+        ) {
+            if (!EmbeddedOmniRouteServer.statusFlow.value.isListening) {
+                EmbeddedOmniRouteServer.startServer(20128)
+            }
+        }
+    }
+
     override suspend fun listModels(
         provider: ProviderInstanceEntity,
         apiKey: String
     ): Result<List<ModelDescriptorEntity>> = withContext(Dispatchers.IO) {
         runCatching {
+            ensureLocalOmniRouteListening(provider.baseUrl)
             val candidateUrls = EndpointUrlNormalizer.buildModelsCandidateUrls(provider.baseUrl)
             var lastException: Throwable? = null
 
@@ -171,21 +182,31 @@ class OpenAICompatibleProvider(
                 .ifBlank { modelId }
             val typeStr = obj.optString("type").lowercase()
             val ownedBy = obj.optString("owned_by").lowercase()
+            val modalityRaw = obj.optString("modality").uppercase()
+            val registeredCombo = EmbeddedOmniRouteServer.findCombo(modelId)
             val isCombo = explicitCombo ||
+                registeredCombo != null ||
                 obj.optBoolean("is_combo", false) ||
                 obj.optBoolean("combo", false) ||
                 typeStr == "combo" ||
                 typeStr == "fallback" ||
                 typeStr == "router" ||
-                ownedBy.contains("combo") ||
-                ownedBy.contains("omniroute")
+                ownedBy.contains("combo")
+
+            val explicitCaps = when (modalityRaw) {
+                "VIDEO" -> setOf( com.example.data.local.CapabilityTag.VIDEO )
+                "IMAGE" -> setOf( com.example.data.local.CapabilityTag.IMAGE )
+                "CHAT" -> setOf( com.example.data.local.CapabilityTag.CHAT )
+                else -> null
+            }
 
             result.add(
                 ModelCapabilityRegistry.buildDescriptor(
                     providerInstanceId = providerInstanceId,
                     rawModelId = modelId,
                     displayNameOverride = displayName,
-                    explicitCombo = isCombo
+                    explicitCombo = isCombo,
+                    explicitCapabilities = explicitCaps
                 )
             )
         }
@@ -248,22 +269,74 @@ class OpenAICompatibleProvider(
         }
 
         if (detectedOmniRouteCatalog) {
-            val zeroConfigDescriptors = EndpointUrlNormalizer.defaultWorkingOmniRouteModels.mapNotNull { (id, label) ->
-                if (seenIds.add(id)) {
-                    ModelCapabilityRegistry.buildDescriptor(
-                        providerInstanceId = providerInstanceId,
-                        rawModelId = id,
-                        displayNameOverride = label,
-                        preserveFavorite = true
+            val omniDescriptors = mutableListOf<ModelDescriptorEntity>()
+            for (combo in EmbeddedOmniRouteServer.combosFlow.value) {
+                if (seenIds.add(combo.id)) {
+                    val cap = when (combo.modality.uppercase()) {
+                        "VIDEO" -> setOf(com.example.data.local.CapabilityTag.VIDEO)
+                        "IMAGE" -> setOf(com.example.data.local.CapabilityTag.IMAGE)
+                        else -> setOf(com.example.data.local.CapabilityTag.CHAT)
+                    }
+                    omniDescriptors.add(
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = providerInstanceId,
+                            rawModelId = combo.id,
+                            displayNameOverride = combo.displayName,
+                            explicitCombo = true,
+                            preserveFavorite = true,
+                            explicitCapabilities = cap
+                        )
                     )
-                } else null
+                }
             }
-            result.addAll(0, zeroConfigDescriptors)
+            for ((id, label) in EndpointUrlNormalizer.defaultWorkingOmniRouteModels) {
+                if (seenIds.add(id)) {
+                    omniDescriptors.add(
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = providerInstanceId,
+                            rawModelId = id,
+                            displayNameOverride = label,
+                            preserveFavorite = true,
+                            explicitCapabilities = setOf(com.example.data.local.CapabilityTag.CHAT)
+                        )
+                    )
+                }
+            }
+            for ((id, label) in EndpointUrlNormalizer.defaultOmniRouteVideoModels) {
+                if (seenIds.add(id)) {
+                    omniDescriptors.add(
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = providerInstanceId,
+                            rawModelId = id,
+                            displayNameOverride = label,
+                            explicitCombo = id.contains("combo") || id.contains("director"),
+                            preserveFavorite = true,
+                            explicitCapabilities = setOf(com.example.data.local.CapabilityTag.VIDEO)
+                        )
+                    )
+                }
+            }
+            for ((id, label) in EndpointUrlNormalizer.defaultOmniRouteImageModels) {
+                if (seenIds.add(id)) {
+                    omniDescriptors.add(
+                        ModelCapabilityRegistry.buildDescriptor(
+                            providerInstanceId = providerInstanceId,
+                            rawModelId = id,
+                            displayNameOverride = label,
+                            explicitCombo = id.contains("combo"),
+                            preserveFavorite = true,
+                            explicitCapabilities = setOf(com.example.data.local.CapabilityTag.IMAGE)
+                        )
+                    )
+                }
+            }
+            result.addAll(0, omniDescriptors)
         }
         return result
     }
 
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatStreamEvent> = flow {
+        ensureLocalOmniRouteListening(request.provider.baseUrl)
         val candidateUrls = EndpointUrlNormalizer.buildChatCompletionCandidateUrls(request.provider.baseUrl)
         val isOmniRouteGateway = request.provider.presetEnum() == ProviderPresetType.OMNIROUTE ||
             request.provider.baseUrl.contains("20128") ||
@@ -820,6 +893,7 @@ class OpenAICompatibleProvider(
         request: ImageGenerationRequest
     ): Result<ImageGenerationOutput> = withContext(Dispatchers.IO) {
         try {
+            ensureLocalOmniRouteListening(request.provider.baseUrl)
             val base = request.provider.baseUrl.trim().trimEnd('/')
             val endpoint = if (base.endsWith("/images/generations")) {
                 base
@@ -966,7 +1040,8 @@ class OpenAICompatibleProvider(
         request: VideoGenerationRequest
     ): Result<VideoSubmissionResult> = withContext(Dispatchers.IO) {
         try {
-            val cleanBase = request.provider.baseUrl.trim().trimEnd('/')
+            ensureLocalOmniRouteListening(request.provider.baseUrl)
+            val candidateUrls = EndpointUrlNormalizer.buildVideoGenerationCandidateUrls(request.provider.baseUrl)
             val enrichedPrompt = ModelCapabilityRegistry.enrichVideoPromptWithMotion(
                 prompt = request.prompt,
                 cameraMotion = request.cameraMotion
@@ -977,6 +1052,7 @@ class OpenAICompatibleProvider(
                 put("aspect_ratio", request.aspectRatio)
                 put("resolution", request.resolution)
                 put("duration", request.durationSeconds)
+                put("camera_motion", request.cameraMotion)
                 if (request.negativePrompt.isNotBlank()) {
                     put("negative_prompt", request.negativePrompt.trim())
                 }
@@ -985,45 +1061,71 @@ class OpenAICompatibleProvider(
                 }
             }
 
-            val reqBuilder = Request.Builder()
-                .url("$cleanBase/videos/generations")
-                .post(payload.toString().toRequestBody(jsonMediaType))
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-            if (request.apiKey.isNotBlank()) {
-                reqBuilder.header("Authorization", "Bearer ${request.apiKey.trim()}")
+            var lastNormError: NormalizedAiError? = null
+            for (videoEndpoint in candidateUrls) {
+                val reqBuilder = Request.Builder()
+                    .url(videoEndpoint)
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                if (request.apiKey.isNotBlank()) {
+                    reqBuilder.header("Authorization", "Bearer ${request.apiKey.trim()}")
+                }
+
+                val attemptResult = runCatching {
+                    okHttpClient.newCall(reqBuilder.build()).execute().use { response ->
+                        val rawBody = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            val normError = ErrorNormalizer.normalizeHttpError(
+                                statusCode = response.code,
+                                responseBody = rawBody,
+                                providerName = request.provider.displayName
+                            )
+                            lastNormError = normError
+                            if (response.code == 404 && candidateUrls.size > 1) {
+                                return@use null
+                            }
+                            throw ProviderNormalizedException(normError)
+                        }
+
+                        val root = JSONObject(rawBody)
+                        val jobId = root.optString("id", root.optString("job_id", "")).ifBlank {
+                            "job_${System.currentTimeMillis()}"
+                        }
+                        val directUrl = root.optString("video_url", root.optString("url", ""))
+                            .ifBlank {
+                                root.optJSONObject("output")?.optString("url", "").orEmpty()
+                            }
+                            .ifBlank {
+                                root.optJSONArray("data")?.optJSONObject(0)?.optString("url", "").orEmpty()
+                            }
+                            .takeIf { it.isNotBlank() }
+                        val status = if (directUrl != null) "COMPLETED" else "QUEUED"
+
+                        VideoSubmissionResult(
+                            remoteJobId = jobId,
+                            status = status,
+                            videoUrl = directUrl
+                        )
+                    }
+                }
+                val value = attemptResult.getOrElse { throw it }
+                if (value != null) {
+                    return@withContext Result.success(value)
+                }
             }
 
-            okHttpClient.newCall(reqBuilder.build()).execute().use { response ->
-                val rawBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val normError = ErrorNormalizer.normalizeHttpError(
-                        statusCode = response.code,
-                        responseBody = rawBody,
+            Result.failure(
+                ProviderNormalizedException(
+                    lastNormError ?: ErrorNormalizer.normalizeHttpError(
+                        statusCode = 404,
+                        responseBody = "Video generation endpoint not found on ${request.provider.baseUrl}",
                         providerName = request.provider.displayName
                     )
-                    return@withContext Result.failure(ProviderNormalizedException(normError))
-                }
-
-                val root = JSONObject(rawBody)
-                val jobId = root.optString("id", root.optString("job_id", "")).ifBlank {
-                    "job_${System.currentTimeMillis()}"
-                }
-                val directUrl = root.optString("video_url", root.optString("url", ""))
-                    .ifBlank {
-                        root.optJSONArray("data")?.optJSONObject(0)?.optString("url", "").orEmpty()
-                    }
-                    .takeIf { it.isNotBlank() }
-                val status = if (directUrl != null) "COMPLETED" else "QUEUED"
-
-                Result.success(
-                    VideoSubmissionResult(
-                        remoteJobId = jobId,
-                        status = status,
-                        videoUrl = directUrl
-                    )
                 )
-            }
+            )
+        } catch (e: ProviderNormalizedException) {
+            Result.failure(e)
         } catch (e: Exception) {
             val normError = ErrorNormalizer.normalizeException(
                 throwable = e,
@@ -1041,6 +1143,7 @@ class OpenAICompatibleProvider(
         remoteJobId: String
     ): Result<VideoPollResult> = withContext(Dispatchers.IO) {
         try {
+            ensureLocalOmniRouteListening(provider.baseUrl)
             val cleanBase = provider.baseUrl.trim().trimEnd('/')
             val pollUrl = if (remoteJobId.startsWith("http")) {
                 remoteJobId

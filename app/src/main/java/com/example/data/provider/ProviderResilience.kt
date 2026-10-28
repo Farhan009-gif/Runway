@@ -280,6 +280,26 @@ object EndpointUrlNormalizer {
         return candidates.distinct()
     }
 
+    /**
+     * Returns candidate URLs for `/v1/videos/generations` across OmniRoute and OpenAI-compatible video gateways.
+     */
+    fun buildVideoGenerationCandidateUrls(rawBaseUrl: String): List<String> {
+        val normalized = normalizeOpenAiBaseUrl(rawBaseUrl)
+        val candidates = mutableListOf<String>()
+        candidates.add("$normalized/videos/generations")
+
+        val withoutV1 = normalized.removeSuffix("/v1").trimEnd('/')
+        if (withoutV1.isNotEmpty() && withoutV1 != normalized) {
+            candidates.add("$withoutV1/v1/videos/generations")
+            candidates.add("$withoutV1/videos/generations")
+            candidates.add("$withoutV1/v1/video/generations")
+        } else {
+            candidates.add("$normalized/v1/videos/generations")
+            candidates.add("$normalized/video/generations")
+        }
+        return candidates.distinct()
+    }
+
     private val scraperOrIdePrefixes = listOf(
         "cfp/",
         "aug/",
@@ -350,6 +370,30 @@ object EndpointUrlNormalizer {
         "ddgw/mistral-small" to "DDGW • Mistral Small (Zero-Config)"
     )
 
+    val defaultOmniRouteVideoModels: List<Pair<String, String>> = listOf(
+        "omniroute/video-combo" to "OmniRoute • Video Router Combo (Wan 2.1 → Kling 1.6 → Luma Ray 2)",
+        "omniroute/cinema-director" to "OmniRoute • Cinema Director Combo (Luma Ray 2 → Veo 2 → Gen-4)",
+        "omniroute/wan-2.1-t2v" to "OmniRoute • Wan 2.1 Text-to-Video (720p/1080p)",
+        "omniroute/kling-v1.6-pro" to "OmniRoute • Kling 1.6 Pro Video",
+        "omniroute/luma-ray-2" to "OmniRoute • Luma Ray 2 Cinema",
+        "omniroute/veo-2-cinema" to "OmniRoute • Google Veo 2 Cinema",
+        "omniroute/hunyuan-video" to "OmniRoute • HunyuanVideo Open-Weights",
+        "omniroute/seedance-v1" to "OmniRoute • Seedance 1.0 Fast Motion",
+        "omniroute/gen4-turbo" to "OmniRoute • Runway Gen-4 Turbo"
+    )
+
+    val defaultOmniRouteImageModels: List<Pair<String, String>> = listOf(
+        "omniroute/flux-combo" to "OmniRoute • Flux Image Router Combo",
+        "omniroute/flux-schnell" to "OmniRoute • Flux.1 Schnell (Zero-Config)",
+        "omniroute/sdxl-lightning" to "OmniRoute • SDXL Lightning (Zero-Config)"
+    )
+
+    val defaultOmniRouteChatCombos: List<Pair<String, String>> = listOf(
+        "omniroute/auto-combo" to "OmniRoute • Smart Chat Router (GPT-4o Mini → Claude 3 Haiku → Llama 3.3)",
+        "omniroute/coding-fallback" to "OmniRoute • Coding Fallback Combo (o3-mini → GPT-4o Mini → Llama 3.3)",
+        "omniroute/vision-pro" to "OmniRoute • Vision Multimodal Combo"
+    )
+
     fun isBrowserScrapedOrOAuthIdeModel(modelId: String): Boolean {
         val lower = modelId.lowercase().trim()
         return scraperOrIdePrefixes.any { lower.startsWith(it) } || lower.contains("cloudflare")
@@ -357,7 +401,7 @@ object EndpointUrlNormalizer {
 
     /**
      * Ranks models so zero-config working OmniRoute models (`ddgw/`) appear first (-1),
-     * reliable direct LLM chat models appear next (0), other standard models third (1),
+     * OmniRoute custom combos & direct LLM/video models appear next (0), other standard models third (1),
      * `auto/` combos fourth (2), and scraper/CLI/OAuth/image-only sub-providers (`cfp/`, `aug/`, `dva/`, `cu/`, `ws/`, `gc/`, `aihorde/`) last (3).
      */
     fun modelPriorityRank(modelId: String, isCombo: Boolean = false): Int {
@@ -365,7 +409,8 @@ object EndpointUrlNormalizer {
         return when {
             zeroConfigWorkingPrefixes.any { lower.startsWith(it) } -> -1
             isBrowserScrapedOrOAuthIdeModel(lower) -> 3
-            lower.startsWith("auto/") || lower.startsWith("omniroute/") || isCombo -> 2
+            lower.startsWith("omniroute/") || isCombo -> 0
+            lower.startsWith("auto/") -> 2
             preferredChatKeywords.any { lower.contains(it) } -> 0
             else -> 1
         }

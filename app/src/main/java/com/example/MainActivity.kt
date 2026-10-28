@@ -842,14 +842,32 @@ private fun OmniStudioRoot(
                                                 onDeleteJob = viewModel::deleteVideoJob,
                                                 onDownloadJob = viewModel::downloadVideoJobToDevice,
                                                 onAddManualModel = { provId, modId ->
-                                                    viewModel.addManualModel(provId, modId, false)
+                                                    viewModel.addCustomModelToProvider(
+                                                        providerId = provId,
+                                                        rawModelId = modId,
+                                                        displayName = modId,
+                                                        modality = "VIDEO",
+                                                        isCombo = modId.contains("combo", ignoreCase = true),
+                                                        selectInStudio = true
+                                                    )
                                                 },
                                                 onApproveCleartextHostFromError = { host ->
                                                     viewModel.approveCleartextHostManually(host)
                                                     viewModel.dismissError()
                                                 },
                                                 onDismissError = viewModel::dismissError,
-                                                onPublishToYouTube = viewModel::openYouTubePublishDialog
+                                                onPublishToYouTube = viewModel::openYouTubePublishDialog,
+                                                onUpsertOmniRouteCombo = { rawId, displayName, strategy, targetModels, description ->
+                                                    viewModel.upsertOmniRouteCustomCombo(
+                                                        rawId = rawId,
+                                                        displayName = displayName,
+                                                        modality = "VIDEO",
+                                                        strategy = strategy,
+                                                        targetModels = targetModels,
+                                                        description = description,
+                                                        selectInStudio = true
+                                                    )
+                                                }
                                             )
                                         }
                                     }

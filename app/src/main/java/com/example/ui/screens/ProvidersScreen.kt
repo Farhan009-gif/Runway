@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.CapabilityTag
 import com.example.data.local.ProviderInstanceEntity
 import com.example.data.local.ProviderPresetType
+import com.example.data.provider.OmniRouteComboDefinition
 import com.example.data.provider.ProviderHealth
 import com.example.ui.components.LucideIcons
 import com.example.ui.components.MinimalButton
@@ -55,13 +56,14 @@ import com.example.ui.components.MinimalChip
 import com.example.ui.components.MinimalStatusDot
 import com.example.ui.components.MinimalToggle
 import com.example.ui.theme.CoralError
+import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.SoftIndigo
 import com.example.ui.viewmodel.ProvidersUiState
 import com.example.ui.viewmodel.ProvidersViewModel
 
 /**
- * Minimal Keys screen: a clean list of providers, masked keys, an edit icon, and a "Test" button.
- * Never shows the full key.
+ * Minimal Keys screen: a clean list of providers, masked keys, an edit icon, a "Test" button,
+ * and an OmniRoute Gateway card for configuring Video Generation models and Custom Combos.
  */
 @Composable
 fun ProvidersScreen(
@@ -69,6 +71,10 @@ fun ProvidersScreen(
     viewModel: ProvidersViewModel,
     modifier: Modifier = Modifier
 ) {
+    var showComboDialog by rememberSaveable { mutableStateOf(false) }
+    var editingCombo by remember { mutableStateOf<OmniRouteComboDefinition?>(null) }
+    var showAddCustomModelDialog by rememberSaveable { mutableStateOf(false) }
+
     val filteredProviders = remember(uiState.providers, uiState.selectedFilter, uiState.searchQuery) {
         uiState.providers.filter { prov ->
             val matchesSearch = uiState.searchQuery.isBlank() ||
@@ -85,6 +91,45 @@ fun ProvidersScreen(
             }
             matchesSearch && matchesFilter
         }
+    }
+
+    if (showComboDialog || editingCombo != null) {
+        OmniRouteComboBuilderDialog(
+            initialCombo = editingCombo,
+            onDismiss = {
+                showComboDialog = false
+                editingCombo = null
+            },
+            onSave = { rawId, displayName, modality, strategy, targetModels, description ->
+                viewModel.upsertOmniRouteCustomCombo(
+                    rawId = rawId,
+                    displayName = displayName,
+                    modality = modality,
+                    strategy = strategy,
+                    targetModels = targetModels,
+                    description = description
+                )
+                showComboDialog = false
+                editingCombo = null
+            }
+        )
+    }
+
+    if (showAddCustomModelDialog) {
+        AddCustomModelDialog(
+            providers = uiState.providers,
+            onDismiss = { showAddCustomModelDialog = false },
+            onSave = { providerId, rawModelId, displayName, modality, isCombo ->
+                viewModel.addCustomModelToProvider(
+                    providerId = providerId,
+                    rawModelId = rawModelId,
+                    displayName = displayName,
+                    modality = modality,
+                    isCombo = isCombo
+                )
+                showAddCustomModelDialog = false
+            }
+        )
     }
 
     if (uiState.showAddProviderDialog || uiState.editingProvider != null) {
@@ -134,6 +179,13 @@ fun ProvidersScreen(
         )
     }
 
+    val omniVideoModelsCount = remember(uiState.models) {
+        uiState.models.count {
+            it.providerInstanceId.contains("omniroute", ignoreCase = true) &&
+                CapabilityTag.VIDEO in it.capabilitySet()
+        }
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -150,7 +202,7 @@ fun ProvidersScreen(
             ) {
                 Column {
                     Text(
-                        text = "Keys",
+                        text = "Keys & Gateway",
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onBackground
                     )
@@ -172,6 +224,29 @@ fun ProvidersScreen(
                     testTag = "add_provider_button"
                 )
             }
+        }
+
+        item {
+            OmniRouteGatewayCombosCard(
+                isListening = uiState.localhostServerStatus.isListening,
+                port = uiState.localhostServerStatus.port,
+                combos = uiState.omniRouteCombos,
+                videoModelsCount = omniVideoModelsCount,
+                onNewCombo = {
+                    editingCombo = null
+                    showComboDialog = true
+                },
+                onEditCombo = { combo ->
+                    editingCombo = combo
+                    showComboDialog = true
+                },
+                onDeleteCombo = { comboId ->
+                    viewModel.deleteOmniRouteCustomCombo(comboId)
+                },
+                onAddCustomModel = {
+                    showAddCustomModelDialog = true
+                }
+            )
         }
 
         items(filteredProviders, key = { it.id }) { provider ->
@@ -575,3 +650,566 @@ private fun TinkVaultDetailsDialog(
         }
     )
 }
+
+@Composable
+private fun OmniRouteGatewayCombosCard(
+    isListening: Boolean,
+    port: Int,
+    combos: List<OmniRouteComboDefinition>,
+    videoModelsCount: Int,
+    onNewCombo: () -> Unit,
+    onEditCombo: (OmniRouteComboDefinition) -> Unit,
+    onDeleteCombo: (String) -> Unit,
+    onAddCustomModel: () -> Unit
+) {
+    var selectedModalityTab by rememberSaveable { mutableStateOf("ALL") }
+    val filteredCombos = remember(combos, selectedModalityTab) {
+        if (selectedModalityTab == "ALL") combos
+        else combos.filter { it.modality.equals(selectedModalityTab, ignoreCase = true) }
+    }
+
+    MinimalCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("omniroute_gateway_combos_card")
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    MinimalStatusDot(isConnected = isListening)
+                    Column {
+                        Text(
+                            text = "OmniRoute Gateway · Video & Custom Combos",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "http://localhost:$port/v1 · ${combos.size} combos · $videoModelsCount video models",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("ALL", "VIDEO", "CHAT", "IMAGE").forEach { tab ->
+                    MinimalChip(
+                        label = tab,
+                        selected = selectedModalityTab == tab,
+                        onClick = { selectedModalityTab = tab },
+                        testTag = "omniroute_combo_filter_$tab"
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                MinimalButton(
+                    text = "+ New Combo",
+                    onClick = onNewCombo,
+                    filled = true,
+                    testTag = "omniroute_new_combo_button"
+                )
+                MinimalButton(
+                    text = "+ Custom Model",
+                    onClick = onAddCustomModel,
+                    filled = false,
+                    testTag = "omniroute_add_custom_model_button"
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                filteredCombos.forEach { combo ->
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onEditCombo(combo) }
+                            .testTag("omniroute_combo_item_${combo.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = combo.displayName,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = when (combo.modality.uppercase()) {
+                                            "VIDEO" -> SoftIndigo.copy(alpha = 0.14f)
+                                            "IMAGE" -> EmeraldSuccess.copy(alpha = 0.14f)
+                                            else -> MaterialTheme.colorScheme.surfaceVariant
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "${combo.modality} · ${combo.strategy}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = when (combo.modality.uppercase()) {
+                                                "VIDEO" -> SoftIndigo
+                                                "IMAGE" -> EmeraldSuccess
+                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "${combo.id} → ${combo.targetModels.joinToString(" → ")}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { onEditCombo(combo) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = LucideIcons.Edit,
+                                        contentDescription = "Edit Combo",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                if (!combo.isBuiltIn) {
+                                    IconButton(
+                                        onClick = { onDeleteCombo(combo.id) },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("delete_combo_${combo.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = LucideIcons.Trash,
+                                            contentDescription = "Delete Combo",
+                                            tint = CoralError,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun OmniRouteComboBuilderDialog(
+    initialCombo: OmniRouteComboDefinition?,
+    defaultModality: String = "VIDEO",
+    onDismiss: () -> Unit,
+    onSave: (
+        rawId: String,
+        displayName: String,
+        modality: String,
+        strategy: String,
+        targetModels: List<String>,
+        description: String
+    ) -> Unit
+) {
+    var rawId by rememberSaveable {
+        mutableStateOf(initialCombo?.id ?: "omniroute/custom-video-combo")
+    }
+    var displayName by rememberSaveable {
+        mutableStateOf(initialCombo?.displayName ?: "OmniRoute Custom Video Combo")
+    }
+    var modality by rememberSaveable {
+        mutableStateOf(initialCombo?.modality ?: defaultModality)
+    }
+    var strategy by rememberSaveable {
+        mutableStateOf(initialCombo?.strategy ?: "FALLBACK_CHAIN")
+    }
+    var targetModelsText by rememberSaveable {
+        mutableStateOf(
+            initialCombo?.targetModels?.joinToString(", ")
+                ?: if (defaultModality == "VIDEO") {
+                    "omniroute/wan-2.1-t2v, omniroute/kling-v1.6-pro, omniroute/luma-ray-2, omniroute/veo-2-cinema"
+                } else {
+                    "ddgw/gpt-4o-mini, ddgw/claude-3-haiku, ddgw/llama-3.3-70b"
+                }
+        )
+    }
+    var description by rememberSaveable {
+        mutableStateOf(
+            initialCombo?.description
+                ?: "Custom OmniRoute multi-model routing combo"
+        )
+    }
+
+    val suggestedTargets = remember(modality) {
+        when (modality.uppercase()) {
+            "VIDEO" -> listOf(
+                "omniroute/wan-2.1-t2v",
+                "omniroute/kling-v1.6-pro",
+                "omniroute/luma-ray-2",
+                "omniroute/veo-2-cinema",
+                "omniroute/hunyuan-video",
+                "omniroute/seedance-v1",
+                "omniroute/gen4-turbo"
+            )
+            "IMAGE" -> listOf(
+                "omniroute/flux-schnell",
+                "omniroute/sdxl-lightning"
+            )
+            else -> listOf(
+                "ddgw/gpt-4o-mini",
+                "ddgw/claude-3-haiku",
+                "ddgw/llama-3.3-70b",
+                "ddgw/mistral-small-24b"
+            )
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (initialCombo != null) "Edit OmniRoute Combo" else "New OmniRoute Combo",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Modality",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("VIDEO", "CHAT", "IMAGE").forEach { mod ->
+                        MinimalChip(
+                            label = mod,
+                            selected = modality == mod,
+                            onClick = {
+                                modality = mod
+                                if (initialCombo == null) {
+                                    when (mod) {
+                                        "VIDEO" -> {
+                                            if (rawId.contains("chat") || rawId.contains("image")) {
+                                                rawId = "omniroute/custom-video-combo"
+                                            }
+                                            targetModelsText = "omniroute/wan-2.1-t2v, omniroute/kling-v1.6-pro, omniroute/luma-ray-2"
+                                        }
+                                        "IMAGE" -> {
+                                            rawId = "omniroute/custom-image-combo"
+                                            targetModelsText = "omniroute/flux-schnell, omniroute/sdxl-lightning"
+                                        }
+                                        "CHAT" -> {
+                                            rawId = "omniroute/custom-chat-combo"
+                                            targetModelsText = "ddgw/gpt-4o-mini, ddgw/claude-3-haiku, ddgw/llama-3.3-70b"
+                                        }
+                                    }
+                                }
+                            },
+                            testTag = "combo_modality_chip_$mod"
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Routing Strategy",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("FALLBACK_CHAIN", "ROUND_ROBIN", "LATENCY_FIRST").forEach { strat ->
+                        MinimalChip(
+                            label = strat,
+                            selected = strategy == strat,
+                            onClick = { strategy = strat },
+                            testTag = "combo_strategy_chip_$strat"
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = rawId,
+                    onValueChange = { rawId = it },
+                    label = { Text("Combo ID (e.g. omniroute/my-video-combo)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("combo_id_input")
+                )
+
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Display Name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("combo_display_name_input")
+                )
+
+                OutlinedTextField(
+                    value = targetModelsText,
+                    onValueChange = { targetModelsText = it },
+                    label = { Text("Target Models (comma-separated)") },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("combo_targets_input")
+                )
+
+                Text(
+                    text = "Tap to append target model:",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    suggestedTargets.forEach { target ->
+                        MinimalChip(
+                            label = "+ ${target.substringAfter("/")}",
+                            selected = targetModelsText.contains(target),
+                            onClick = {
+                                val existing = targetModelsText.split(",")
+                                    .map { it.trim() }
+                                    .filter { it.isNotEmpty() }
+                                    .toMutableList()
+                                if (target in existing) {
+                                    existing.remove(target)
+                                } else {
+                                    existing.add(target)
+                                }
+                                targetModelsText = existing.joinToString(", ")
+                            }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            MinimalButton(
+                text = "Save Combo",
+                onClick = {
+                    val targets = targetModelsText.split(",")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                    onSave(
+                        rawId.trim(),
+                        displayName.trim().ifBlank { rawId.trim() },
+                        modality,
+                        strategy,
+                        targets,
+                        description.trim()
+                    )
+                },
+                enabled = rawId.isNotBlank(),
+                filled = true,
+                testTag = "save_combo_confirm_button"
+            )
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+internal fun AddCustomModelDialog(
+    providers: List<ProviderInstanceEntity>,
+    defaultProviderId: String = "provider_omniroute_default",
+    defaultModality: String = "VIDEO",
+    onDismiss: () -> Unit,
+    onSave: (
+        providerId: String,
+        rawModelId: String,
+        displayName: String,
+        modality: String,
+        isCombo: Boolean
+    ) -> Unit
+) {
+    var selectedProviderId by rememberSaveable {
+        mutableStateOf(
+            providers.firstOrNull { it.id == defaultProviderId }?.id
+                ?: providers.firstOrNull()?.id
+                ?: "provider_omniroute_default"
+        )
+    }
+    var rawModelId by rememberSaveable { mutableStateOf("omniroute/wan-2.1-t2v") }
+    var displayName by rememberSaveable { mutableStateOf("OmniRoute Wan 2.1 Text-to-Video") }
+    var modality by rememberSaveable { mutableStateOf(defaultModality) }
+    var isCombo by rememberSaveable { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Add Custom Model", style = MaterialTheme.typography.titleLarge)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Provider",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    providers.forEach { prov ->
+                        MinimalChip(
+                            label = prov.displayName,
+                            selected = selectedProviderId == prov.id,
+                            onClick = { selectedProviderId = prov.id }
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Modality",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("VIDEO", "CHAT", "IMAGE").forEach { mod ->
+                        MinimalChip(
+                            label = mod,
+                            selected = modality == mod,
+                            onClick = { modality = mod }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = rawModelId,
+                    onValueChange = { rawModelId = it },
+                    label = { Text("Model ID (e.g. omniroute/kling-v1.6-pro)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("custom_model_id_input")
+                )
+
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Display Name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("custom_model_name_input")
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Mark as Combo / Router Model", style = MaterialTheme.typography.bodyMedium)
+                    MinimalToggle(
+                        checked = isCombo,
+                        onCheckedChange = { isCombo = it }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            MinimalButton(
+                text = "Add Model",
+                onClick = {
+                    onSave(
+                        selectedProviderId,
+                        rawModelId.trim(),
+                        displayName.trim().ifBlank { rawModelId.trim() },
+                        modality,
+                        isCombo
+                    )
+                },
+                enabled = rawModelId.isNotBlank(),
+                filled = true,
+                testTag = "save_custom_model_confirm_button"
+            )
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
