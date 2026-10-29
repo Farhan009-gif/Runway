@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -7,6 +8,16 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import com.example.ui.components.ChatMediaGenerateBottomSheet
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -183,6 +194,15 @@ fun ChatWorkspaceScreen(
     onOpenProviderSettings: () -> Unit = {},
     onOpenTerminalAndHealthSheet: () -> Unit = {},
     onOpenConnectors: () -> Unit = {},
+    onGenerateMediaInChat: (
+        modality: String,
+        prompt: String,
+        providerId: String?,
+        modelId: String?,
+        aspectRatio: String?,
+        durationSeconds: Int?,
+        sourceImageUri: String?
+    ) -> Unit = { _, _, _, _, _, _, _ -> },
     onUpsertCustomCombo: (
         rawId: String,
         displayName: String,
@@ -220,8 +240,25 @@ fun ChatWorkspaceScreen(
 
     var showToolsSheet by rememberSaveable { mutableStateOf(false) }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
+    var showChatMediaGenerateSheet by rememberSaveable { mutableStateOf(false) }
+    var chatMediaGenerateModality by rememberSaveable { mutableStateOf("IMAGE") }
     var showChatComboBuilderDialog by rememberSaveable { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ConversationEntity?>(null) }
+
+    if (showChatMediaGenerateSheet) {
+        ChatMediaGenerateBottomSheet(
+            onDismiss = { showChatMediaGenerateSheet = false },
+            initialModality = chatMediaGenerateModality,
+            initialPrompt = uiState.draftMessage,
+            initialImageUri = uiState.attachedImageUri ?: uiState.attachedMediaList.firstOrNull { !it.isVideo }?.uri,
+            providers = providers,
+            models = models,
+            uiState = uiState,
+            onGenerate = { mod, pr, provId, modId, aspect, dur, srcUri ->
+                onGenerateMediaInChat(mod, pr, provId, modId, aspect, dur, srcUri)
+            }
+        )
+    }
 
     if (showChatComboBuilderDialog) {
         OmniRouteComboBuilderDialog(
@@ -386,6 +423,17 @@ fun ChatWorkspaceScreen(
                 testTag = "tools_sheet_git_clone"
             )
             MinimalToolRow(
+                icon = LucideIcons.Sparkles,
+                title = "Generate Image / Video",
+                subtitle = "Synthesize images or videos right here in chat without leaving the tab",
+                onClick = {
+                    showToolsSheet = false
+                    chatMediaGenerateModality = "IMAGE"
+                    showChatMediaGenerateSheet = true
+                },
+                testTag = "tools_sheet_generate_media"
+            )
+            MinimalToolRow(
                 icon = LucideIcons.Terminal,
                 title = "Console",
                 subtitle = "OmniRoute localhost daemon & model health check",
@@ -417,6 +465,28 @@ fun ChatWorkspaceScreen(
             title = "Add to message",
             modifier = Modifier.testTag("chat_attach_bottom_sheet")
         ) {
+            MinimalToolRow(
+                icon = LucideIcons.Image,
+                title = "Generate AI image",
+                subtitle = "Synthesize an image directly in chat using Flux, Imagen or SD",
+                onClick = {
+                    showAttachSheet = false
+                    chatMediaGenerateModality = "IMAGE"
+                    showChatMediaGenerateSheet = true
+                },
+                testTag = "attach_sheet_generate_image"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Video,
+                title = "Generate AI video",
+                subtitle = "Synthesize video clips using Runway, Luma, Kling or Video Combo",
+                onClick = {
+                    showAttachSheet = false
+                    chatMediaGenerateModality = "VIDEO"
+                    showChatMediaGenerateSheet = true
+                },
+                testTag = "attach_sheet_generate_video"
+            )
             MinimalToolRow(
                 icon = LucideIcons.Image,
                 title = "Attach photos",
@@ -1373,6 +1443,7 @@ private fun MinimalChatMessageItem(
         )
     }
     var fullScreenAttachmentUri by remember { mutableStateOf<String?>(null) }
+    var fullScreenVideoUri by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -1408,6 +1479,8 @@ private fun MinimalChatMessageItem(
                                         .clickable {
                                             if (!media.isVideo) {
                                                 fullScreenAttachmentUri = media.uri
+                                            } else {
+                                                fullScreenVideoUri = media.uri
                                             }
                                         },
                                     contentAlignment = Alignment.Center
@@ -1467,9 +1540,14 @@ private fun MinimalChatMessageItem(
                         attachments.forEach { media ->
                             if (!media.isVideo) {
                                 com.example.ui.components.RunwayReplyImageItem(
-                                    altText = "",
+                                    altText = media.name ?: "Generated image",
                                     imageUrl = media.uri,
                                     onClick = { fullScreenAttachmentUri = media.uri }
+                                )
+                            } else {
+                                ChatReplyVideoCard(
+                                    media = media,
+                                    onClick = { fullScreenVideoUri = media.uri }
                                 )
                             }
                         }
@@ -1601,6 +1679,14 @@ private fun MinimalChatMessageItem(
             altText = "Attachment",
             imageUrl = uri,
             onDismiss = { fullScreenAttachmentUri = null },
+            onToast = onCopiedToast
+        )
+    }
+
+    fullScreenVideoUri?.let { vidUri ->
+        ChatFullScreenVideoDialog(
+            videoUri = vidUri,
+            onDismiss = { fullScreenVideoUri = null },
             onToast = onCopiedToast
         )
     }
@@ -2085,3 +2171,196 @@ private fun MinimalConversationDrawerContent(
         }
     }
 }
+
+@Composable
+fun ChatReplyVideoCard(
+    media: ChatMediaAttachment,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .widthIn(max = 280.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .testTag("reply_inline_video")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = SoftIndigo.copy(alpha = 0.85f),
+                modifier = Modifier.size(46.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = LucideIcons.Play,
+                        contentDescription = "Play Video",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = Color.Black.copy(alpha = 0.75f),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = LucideIcons.Video,
+                        contentDescription = null,
+                        tint = SoftIndigo,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = "VIDEO CLIP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = media.name?.takeIf { it.isNotBlank() } ?: "Generated Video (Tap to play)",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+fun ChatFullScreenVideoDialog(
+    videoUri: String,
+    onDismiss: () -> Unit,
+    onToast: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val exoPlayer = remember(videoUri) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(Uri.parse(videoUri)))
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+            prepare()
+        }
+    }
+    DisposableEffect(exoPlayer) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .widthIn(max = 560.dp)
+                .padding(vertical = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = LucideIcons.Video,
+                            contentDescription = null,
+                            tint = SoftIndigo,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "AI Video Preview",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = LucideIcons.Close,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = exoPlayer
+                                useController = true
+                            }
+                        },
+                        update = { view ->
+                            view.player = exoPlayer
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    com.example.ui.components.MinimalButton(
+                        text = "Copy link",
+                        icon = LucideIcons.Copy,
+                        onClick = {
+                            clipboard.setText(AnnotatedString(videoUri))
+                            onToast("Video link copied to clipboard")
+                        }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    com.example.ui.components.MinimalButton(
+                        text = "Close",
+                        onClick = onDismiss
+                    )
+                }
+            }
+        }
+    }
+}
+

@@ -2659,6 +2659,360 @@ class OmniStudioViewModel(
         }
     }
 
+    fun generateMediaInChat(
+        modality: String,
+        prompt: String,
+        providerId: String? = null,
+        modelId: String? = null,
+        aspectRatio: String? = null,
+        durationSeconds: Int? = null,
+        sourceImageUri: String? = null
+    ) {
+        val cleanPrompt = prompt.trim()
+        if (cleanPrompt.isEmpty()) {
+            _uiState.update { it.copy(statusToast = "Enter a prompt first.") }
+            return
+        }
+
+        viewModelScope.launch {
+            val allProvs = dao.getProvidersOnce()
+            val isVideo = modality.equals("VIDEO", ignoreCase = true)
+
+            // Resolve target provider
+            val resolvedProvider = if (!providerId.isNullOrBlank()) {
+                allProvs.firstOrNull { it.id == providerId }
+            } else if (isVideo) {
+                allProvs.firstOrNull { it.id == _uiState.value.selectedVideoProviderId }
+                    ?: allProvs.firstOrNull { it.isDefaultForVideo && it.isEnabled }
+                    ?: allProvs.firstOrNull { CapabilityTag.VIDEO in it.capabilitySet() }
+                    ?: allProvs.firstOrNull()
+            } else {
+                allProvs.firstOrNull { it.id == _uiState.value.selectedImageProviderId }
+                    ?: allProvs.firstOrNull { it.isDefaultForImage && it.isEnabled }
+                    ?: allProvs.firstOrNull { CapabilityTag.IMAGE in it.capabilitySet() }
+                    ?: allProvs.firstOrNull()
+            }
+            if (resolvedProvider == null) {
+                _uiState.update { it.copy(statusToast = "No AI provider configured.") }
+                return@launch
+            }
+            val targetProvider = resolvedProvider
+
+            // Resolve target model
+            val targetModelId = if (!modelId.isNullOrBlank()) {
+                modelId
+            } else if (isVideo) {
+                _uiState.value.selectedVideoModelId.ifBlank {
+                    targetProvider.defaultVideoModelId.ifBlank { "omniroute/video-combo" }
+                }
+            } else {
+                _uiState.value.selectedImageModelId.ifBlank {
+                    targetProvider.defaultImageModelId.ifBlank { "omniroute/flux-combo" }
+                }
+            }
+
+            // Check cleartext host approval
+            val unapprovedHost = extractHttpHost(targetProvider.baseUrl)?.takeIf {
+                it !in _uiState.value.approvedCleartextHosts
+            }
+            if (unapprovedHost != null) {
+                requestCleartextHostApproval(
+                    host = unapprovedHost,
+                    fullUrl = targetProvider.baseUrl,
+                    providerName = targetProvider.displayName
+                ) {
+                    generateMediaInChat(
+                        modality = modality,
+                        prompt = prompt,
+                        providerId = providerId,
+                        modelId = modelId,
+                        aspectRatio = aspectRatio,
+                        durationSeconds = durationSeconds,
+                        sourceImageUri = sourceImageUri
+                    )
+                }
+                return@launch
+            }
+
+            // Ensure active conversation exists
+            var convId = _uiState.value.activeConversationId
+            var conv = convId?.let { dao.getConversationById(it) }
+            if (conv == null) {
+                val titlePrefix = if (isVideo) "🎬 Video:" else "🎨 Image:"
+                val newConv = ConversationEntity(
+                    id = UUID.randomUUID().toString(),
+                    title = "$titlePrefix ${cleanPrompt.take(28)}",
+                    providerInstanceId = targetProvider.id,
+                    modelId = targetModelId
+                )
+                dao.upsertConversation(newConv)
+                conv = newConv
+                convId = newConv.id
+                selectConversation(convId)
+            }
+
+            // Insert user message in chat
+            val userPrefix = if (isVideo) "/video" else "/image"
+            val userMsg = MessageEntity(
+                id = UUID.randomUUID().toString(),
+                conversationId = conv.id,
+                role = "USER",
+                content = "$userPrefix $cleanPrompt",
+                providerInstanceId = targetProvider.id,
+                modelId = targetModelId,
+                attachmentUri = sourceImageUri?.let { uri ->
+                    ChatMediaAttachment(uri = uri, isVideo = false).toSerializedString()
+                },
+                attachmentMimeType = if (sourceImageUri != null) "image/jpeg" else null,
+                createdAt = System.currentTimeMillis()
+            )
+            dao.upsertMessage(userMsg)
+
+            // Insert placeholder assistant response
+            val assistantMsgId = UUID.randomUUID().toString()
+            val shortModel = targetModelId.substringAfterLast("/")
+            val initialAssistantContent = if (isVideo) {
+                "🎬 Generating video using **$shortModel** via ${targetProvider.displayName}...\n_Please wait, video synthesis in progress._"
+            } else {
+                "🎨 Generating image using **$shortModel** via ${targetProvider.displayName}...\n_Synthesizing pixels..._"
+            }
+            val assistantMsg = MessageEntity(
+                id = assistantMsgId,
+                conversationId = conv.id,
+                role = "ASSISTANT",
+                content = initialAssistantContent,
+                providerInstanceId = targetProvider.id,
+                modelId = targetModelId,
+                isStreaming = true,
+                createdAt = System.currentTimeMillis() + 10L
+            )
+            dao.upsertMessage(assistantMsg)
+
+            _uiState.update {
+                it.copy(
+                    isStreaming = true,
+                    draftMessage = "",
+                    activeError = null,
+                    statusToast = if (isVideo) "Generating video in chat..." else "Generating image in chat..."
+                )
+            }
+
+            val apiKey = repository.secretVault.getApiKey(targetProvider.id)
+            val sourceDataUri = if (!sourceImageUri.isNullOrBlank()) {
+                repository.encodeImageUriToDataUri(sourceImageUri)
+            } else null
+
+            if (!isVideo) {
+                val selectedRatio = aspectRatio ?: _uiState.value.imageAspectRatio.ifBlank { "1:1" }
+                val request = ImageGenerationRequest(
+                    provider = targetProvider,
+                    apiKey = apiKey,
+                    modelId = targetModelId,
+                    prompt = cleanPrompt,
+                    negativePrompt = "",
+                    aspectRatio = selectedRatio,
+                    size = _uiState.value.imageSize,
+                    count = 1,
+                    seed = null,
+                    stylePreset = _uiState.value.imageStylePreset,
+                    guidanceScale = _uiState.value.imageGuidanceScale,
+                    steps = _uiState.value.imageSteps,
+                    quality = "standard",
+                    sourceImageDataUri = sourceDataUri,
+                    imageToImageStrength = _uiState.value.imageStrength,
+                    isUpscaleRequest = false
+                )
+
+                val result = repository.generateAndPersistImages(
+                    request = request,
+                    rawSourceUriForDisplay = sourceImageUri
+                )
+
+                result.fold(
+                    onSuccess = { savedList ->
+                        val saved = savedList.firstOrNull()
+                        val mediaAttachment = if (saved != null) {
+                            ChatMediaAttachment(
+                                uri = saved.imageUri,
+                                mimeType = "image/png",
+                                isVideo = false,
+                                name = "Generated Image"
+                            ).toSerializedString()
+                        } else null
+
+                        val updatedContent = buildString {
+                            append("✨ **Image generated successfully**\n\n")
+                            append("> ").append(cleanPrompt).append("\n\n")
+                            append("• **Model:** `").append(targetModelId).append("`\n")
+                            append("• **Provider:** ").append(targetProvider.displayName).append("\n")
+                            append("• **Aspect Ratio:** ").append(selectedRatio)
+                        }
+
+                        val finishedMsg = assistantMsg.copy(
+                            content = updatedContent,
+                            attachmentUri = mediaAttachment,
+                            attachmentMimeType = "image/png",
+                            isStreaming = false,
+                            completionTokens = 1000,
+                            estimatedCostUsd = com.example.data.provider.ModelPriceTable.calculateCostUsd(targetModelId, 0, 1000)
+                        )
+                        dao.upsertMessage(finishedMsg)
+                        _uiState.update { it.copy(isStreaming = false, statusToast = "Image ready!") }
+                    },
+                    onFailure = { err ->
+                        val failContent = "❌ **Image generation failed:**\n${err.message ?: "Unknown error"}"
+                        val failedMsg = assistantMsg.copy(
+                            content = failContent,
+                            errorText = err.message,
+                            isStreaming = false
+                        )
+                        dao.upsertMessage(failedMsg)
+                        _uiState.update { it.copy(isStreaming = false, statusToast = "Image generation failed") }
+                    }
+                )
+            } else {
+                val selectedRatio = aspectRatio ?: _uiState.value.videoAspectRatio.ifBlank { "16:9" }
+                val selectedDuration = durationSeconds ?: _uiState.value.videoDurationSeconds.coerceAtLeast(5)
+                val request = VideoGenerationRequest(
+                    provider = targetProvider,
+                    apiKey = apiKey,
+                    modelId = targetModelId,
+                    prompt = cleanPrompt,
+                    negativePrompt = "",
+                    aspectRatio = selectedRatio,
+                    resolution = _uiState.value.videoResolution.ifBlank { "720p" },
+                    durationSeconds = selectedDuration,
+                    cameraMotion = "none",
+                    sourceImageDataUri = sourceDataUri
+                )
+
+                val result = repository.submitAndEnqueueVideoJob(
+                    request = request,
+                    rawSourceUriForDisplay = sourceImageUri
+                )
+
+                result.fold(
+                    onSuccess = { initialJob ->
+                        if (initialJob.status == "COMPLETED" && !initialJob.videoUri.isNullOrBlank()) {
+                            val mediaAttachment = ChatMediaAttachment(
+                                uri = initialJob.videoUri,
+                                mimeType = "video/mp4",
+                                isVideo = true,
+                                name = "Generated Video"
+                            ).toSerializedString()
+
+                            val updatedContent = buildString {
+                                append("🎬 **Video generated successfully**\n\n")
+                                append("> ").append(cleanPrompt).append("\n\n")
+                                append("• **Model:** `").append(targetModelId).append("`\n")
+                                append("• **Provider:** ").append(targetProvider.displayName).append("\n")
+                                append("• **Duration:** ").append(selectedDuration).append("s · ").append(selectedRatio)
+                            }
+
+                            val finishedMsg = assistantMsg.copy(
+                                content = updatedContent,
+                                attachmentUri = mediaAttachment,
+                                attachmentMimeType = "video/mp4",
+                                isStreaming = false,
+                                completionTokens = 2500,
+                                estimatedCostUsd = com.example.data.provider.ModelPriceTable.calculateCostUsd(targetModelId, 0, 2500)
+                            )
+                            dao.upsertMessage(finishedMsg)
+                            _uiState.update { it.copy(isStreaming = false, statusToast = "Video ready!") }
+                        } else {
+                            val progressContent = buildString {
+                                append("🎬 **Video job in progress...** (Status: `").append(initialJob.status).append("`)\n\n")
+                                append("> ").append(cleanPrompt).append("\n\n")
+                                append("• **Model:** `").append(targetModelId).append("`\n")
+                                append("• **Job ID:** `").append(initialJob.id.take(12)).append("`\n")
+                                append("_Polling for video completion in chat..._")
+                            }
+                            dao.upsertMessage(assistantMsg.copy(content = progressContent))
+
+                            launch {
+                                var currentJob = initialJob
+                                var pollCount = 0
+                                val maxPolls = 60
+                                while (currentJob.status in listOf("QUEUED", "PROCESSING") && pollCount < maxPolls) {
+                                    kotlinx.coroutines.delay(3500L)
+                                    pollCount++
+                                    val pollRes = repository.pollVideoJobOnce(currentJob.id)
+                                    pollRes.onSuccess { updatedJob ->
+                                        currentJob = updatedJob
+                                        if (updatedJob.status in listOf("QUEUED", "PROCESSING")) {
+                                            val percentStr = if (updatedJob.progressPercent > 0) " (${updatedJob.progressPercent}%)" else ""
+                                            dao.upsertMessage(
+                                                assistantMsg.copy(
+                                                    content = "🎬 **Rendering video$percentStr...** (Status: `${updatedJob.status}`)\n\n> $cleanPrompt\n\n• **Model:** `$targetModelId`\n• **Job ID:** `${updatedJob.id.take(12)}`\n_Checking progress... ($pollCount/$maxPolls)_"
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (currentJob.status == "COMPLETED" && !currentJob.videoUri.isNullOrBlank()) {
+                                    val mediaAttachment = ChatMediaAttachment(
+                                        uri = currentJob.videoUri,
+                                        mimeType = "video/mp4",
+                                        isVideo = true,
+                                        name = "Generated Video"
+                                    ).toSerializedString()
+
+                                    val updatedContent = buildString {
+                                        append("🎬 **Video generated successfully**\n\n")
+                                        append("> ").append(cleanPrompt).append("\n\n")
+                                        append("• **Model:** `").append(targetModelId).append("`\n")
+                                        append("• **Provider:** ").append(targetProvider.displayName).append("\n")
+                                        append("• **Duration:** ").append(selectedDuration).append("s · ").append(selectedRatio)
+                                    }
+
+                                    dao.upsertMessage(
+                                        assistantMsg.copy(
+                                            content = updatedContent,
+                                            attachmentUri = mediaAttachment,
+                                            attachmentMimeType = "video/mp4",
+                                            isStreaming = false,
+                                            completionTokens = 2500,
+                                            estimatedCostUsd = com.example.data.provider.ModelPriceTable.calculateCostUsd(targetModelId, 0, 2500)
+                                        )
+                                    )
+                                    _uiState.update { it.copy(isStreaming = false, statusToast = "Video generation completed!") }
+                                } else if (currentJob.status == "FAILED") {
+                                    dao.upsertMessage(
+                                        assistantMsg.copy(
+                                            content = "❌ **Video generation failed:**\n${currentJob.errorMessage ?: "Remote generation error"}",
+                                            errorText = currentJob.errorMessage,
+                                            isStreaming = false
+                                        )
+                                    )
+                                    _uiState.update { it.copy(isStreaming = false, statusToast = "Video generation failed") }
+                                } else {
+                                    dao.upsertMessage(
+                                        assistantMsg.copy(
+                                            content = "⏳ **Video job still processing in background**\n\n> $cleanPrompt\n\nJob ID: `${currentJob.id}`\n_You can track this video job in the Video Studio tab or Media Gallery when ready._",
+                                            isStreaming = false
+                                        )
+                                    )
+                                    _uiState.update { it.copy(isStreaming = false) }
+                                }
+                            }
+                        }
+                    },
+                    onFailure = { err ->
+                        val failContent = "❌ **Video job submission failed:**\n${err.message ?: "Unknown error"}"
+                        val failedMsg = assistantMsg.copy(
+                            content = failContent,
+                            errorText = err.message,
+                            isStreaming = false
+                        )
+                        dao.upsertMessage(failedMsg)
+                        _uiState.update { it.copy(isStreaming = false, statusToast = "Video submission failed") }
+                    }
+                )
+            }
+        }
+    }
+
     fun sendMessage() {
         val currentDraft = _uiState.value.draftMessage.trim()
         val mediaList = _uiState.value.attachedMediaList
@@ -2682,6 +3036,53 @@ class OmniStudioViewModel(
             if (agentCmd.isNotEmpty()) {
                 _uiState.update { it.copy(draftMessage = "", activeError = null) }
                 executeAgentCommand(agentCmd)
+                return
+            }
+        }
+
+        // Support direct "/image <prompt>" or "/imagine <prompt>" or "/img <prompt>" in chat
+        if (currentDraft.startsWith("/image ", ignoreCase = true) ||
+            currentDraft.startsWith("/imagine ", ignoreCase = true) ||
+            currentDraft.startsWith("/img ", ignoreCase = true)
+        ) {
+            val imgPrompt = currentDraft.substringAfter(" ").trim()
+            if (imgPrompt.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        draftMessage = "",
+                        attachedImageUri = null,
+                        attachedMediaList = emptyList(),
+                        activeError = null
+                    )
+                }
+                generateMediaInChat(
+                    modality = "IMAGE",
+                    prompt = imgPrompt,
+                    sourceImageUri = legacyAttachment ?: mediaList.firstOrNull { !it.isVideo }?.uri
+                )
+                return
+            }
+        }
+
+        // Support direct "/video <prompt>" or "/vid <prompt>" in chat
+        if (currentDraft.startsWith("/video ", ignoreCase = true) ||
+            currentDraft.startsWith("/vid ", ignoreCase = true)
+        ) {
+            val vidPrompt = currentDraft.substringAfter(" ").trim()
+            if (vidPrompt.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        draftMessage = "",
+                        attachedImageUri = null,
+                        attachedMediaList = emptyList(),
+                        activeError = null
+                    )
+                }
+                generateMediaInChat(
+                    modality = "VIDEO",
+                    prompt = vidPrompt,
+                    sourceImageUri = legacyAttachment ?: mediaList.firstOrNull { !it.isVideo }?.uri
+                )
                 return
             }
         }

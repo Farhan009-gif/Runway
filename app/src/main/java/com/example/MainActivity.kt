@@ -751,6 +751,7 @@ private fun OmniStudioRoot(
                                 },
                                 onOpenTerminalAndHealthSheet = { viewModel.setShowTerminalAndHealthSheet(true) },
                                 onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                onGenerateMediaInChat = viewModel::generateMediaInChat,
                                 onUpsertCustomCombo = { rawId, displayName, strategy, targetModels, description ->
                                     viewModel.upsertOmniRouteCustomCombo(
                                         rawId = rawId,
