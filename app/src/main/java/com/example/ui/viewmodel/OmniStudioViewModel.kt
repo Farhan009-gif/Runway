@@ -52,6 +52,9 @@ import com.example.data.provider.ProviderHealth
 import com.example.data.provider.ProviderNormalizedException
 import com.example.data.provider.RequestDiagnosticEntry
 import com.example.data.provider.VideoGenerationRequest
+import com.example.data.provider.CheaperModelSuggestion
+import com.example.data.provider.FriendlyError
+import com.example.data.provider.AttachedDocFile
 import com.example.data.repository.OmniRepository
 import com.example.data.security.TinkSecretVault
 import com.example.data.security.VaultSecurityStatus
@@ -272,7 +275,27 @@ data class OmniUiState(
     val showRepoFileBrowserSheet: Boolean = false,
     val repoFilesList: List<String> = emptyList(),
     val viewingRepoFilePath: String? = null,
-    val viewingRepoFileContent: String? = null
+    val viewingRepoFileContent: String? = null,
+    // Voice
+    val isReadingRepliesAloud: Boolean = false,
+    val isListeningToVoice: Boolean = false,
+    // Cheaper Model Suggestion
+    val cheaperModelSuggestion: com.example.data.provider.CheaperModelSuggestion? = null,
+    // Provider Spending Limits
+    val spendingLimitWarningBanner: String? = null,
+    val spendingLimitBlockedProvider: ProviderInstanceEntity? = null,
+    val overriddenSpendingLimitProviderIds: Set<String> = emptySet(),
+    // Friendly Error Messages
+    val friendlyErrorState: com.example.data.provider.FriendlyError? = null,
+    // File Attachments
+    val attachedDocFiles: List<com.example.data.provider.AttachedDocFile> = emptyList(),
+    val hasSeenProviderFileNotice: Boolean = false,
+    val showProviderFileNotice: Boolean = false,
+    // Smart Context Trimming
+    val isContextTrimmingEnabled: Boolean = true,
+    val isContextTrimmedForChat: Boolean = false,
+    val activeTrimmedSummary: String? = null,
+    val showTrimmedSummaryDialog: Boolean = false
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)

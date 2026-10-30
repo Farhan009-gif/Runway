@@ -147,6 +147,7 @@ data class ProviderInstanceEntity(
     val defaultImageModelId: String = "",
     val defaultVideoModelId: String = "",
     val lastTestStatus: String = "Untested",
+    val monthlyLimitUsd: Double = 0.0,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun capabilitySet(): Set<CapabilityTag> =
@@ -227,6 +228,7 @@ data class MessageEntity(
     val errorText: String? = null,
     val comparisonGroupId: String? = null, // Groups 2-3 side-by-side Compare Mode replies
     val latencyMs: Long = 0L,
+    val cachedTokens: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 

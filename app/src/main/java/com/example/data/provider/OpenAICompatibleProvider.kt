@@ -599,8 +599,10 @@ class OpenAICompatibleProvider(
                         if (usageObj != null) {
                             val pTokens = usageObj.optInt("prompt_tokens", 0)
                             val cTokens = usageObj.optInt("completion_tokens", 0)
+                            val promptDetails = usageObj.optJSONObject("prompt_tokens_details")
+                            val cachedTokens = promptDetails?.optInt("cached_tokens", 0) ?: 0
                             if (pTokens > 0 || cTokens > 0) {
-                                emit(ChatStreamEvent.Usage(pTokens, cTokens))
+                                emit(ChatStreamEvent.Usage(pTokens, cTokens, cachedTokens))
                             }
                         }
                     } else if (!sawSseDataLine) {
@@ -657,10 +659,13 @@ class OpenAICompatibleProvider(
                     }
                     val usageObj = json.optJSONObject("usage")
                     if (usageObj != null) {
+                        val promptDetails = usageObj.optJSONObject("prompt_tokens_details")
+                        val cachedTokens = promptDetails?.optInt("cached_tokens", 0) ?: 0
                         emit(
                             ChatStreamEvent.Usage(
                                 promptTokens = usageObj.optInt("prompt_tokens", 0),
-                                completionTokens = usageObj.optInt("completion_tokens", 0)
+                                completionTokens = usageObj.optInt("completion_tokens", 0),
+                                cachedTokens = cachedTokens
                             )
                         )
                     }
@@ -862,7 +867,8 @@ class OpenAICompatibleProvider(
 
         if (!minimalCompatMode && request.tools.isNotEmpty()) {
             val toolsArr = JSONArray()
-            for (tool in request.tools) {
+            val sortedTools = request.tools.sortedBy { it.toolName }
+            for (tool in sortedTools) {
                 val paramsSchema = runCatching { JSONObject(tool.inputSchemaJson) }.getOrElse {
                     JSONObject().apply {
                         put("type", "object")

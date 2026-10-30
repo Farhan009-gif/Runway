@@ -129,6 +129,7 @@ class AnthropicProvider(
             .post(payloadJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "text/event-stream, application/json")
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "prompt-caching-2024-07-25")
 
         if (request.apiKey.isNotBlank()) {
             reqBuilder.header("x-api-key", request.apiKey.trim())
@@ -157,6 +158,7 @@ class AnthropicProvider(
 
                 var inputTokens = 0
                 var outputTokens = 0
+                var cachedTokens = 0
                 var activeToolId: String? = null
                 var activeToolName: String? = null
                 val activeToolJsonBuilder = StringBuilder()
@@ -196,6 +198,7 @@ class AnthropicProvider(
                             val usage = eventJson.optJSONObject("message")?.optJSONObject("usage")
                             if (usage != null) {
                                 inputTokens = usage.optInt("input_tokens", inputTokens)
+                                cachedTokens = usage.optInt("cache_read_input_tokens", cachedTokens)
                             }
                         }
                         "content_block_start" -> {
@@ -234,7 +237,9 @@ class AnthropicProvider(
                             val usage = eventJson.optJSONObject("usage")
                             if (usage != null) {
                                 outputTokens = usage.optInt("output_tokens", outputTokens)
-                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens))
+                                val readCached = usage.optInt("cache_read_input_tokens", 0)
+                                if (readCached > 0) cachedTokens = readCached
+                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens, cachedTokens))
                             }
                         }
                         "error" -> {
@@ -290,7 +295,20 @@ class AnthropicProvider(
             root.put("top_p", request.topP.toDouble().coerceIn(0.05, 1.0))
         }
         if (request.supportsSystemPrompt && request.systemPrompt.isNotBlank()) {
-            root.put("system", request.systemPrompt.trim())
+            if (request.tools.isNotEmpty()) {
+                val systemArr = JSONArray().apply {
+                    put(
+                        JSONObject().apply {
+                            put("type", "text")
+                            put("text", request.systemPrompt.trim())
+                            put("cache_control", JSONObject().put("type", "ephemeral"))
+                        }
+                    )
+                }
+                root.put("system", systemArr)
+            } else {
+                root.put("system", request.systemPrompt.trim())
+            }
         }
 
         val messagesArr = JSONArray()
@@ -400,7 +418,8 @@ class AnthropicProvider(
 
         if (request.tools.isNotEmpty()) {
             val toolsArr = JSONArray()
-            for (tool in request.tools) {
+            val sortedTools = request.tools.sortedBy { it.toolName }
+            for ((index, tool) in sortedTools.withIndex()) {
                 val inputSchema = runCatching { JSONObject(tool.inputSchemaJson) }.getOrElse {
                     JSONObject().apply {
                         put("type", "object")
@@ -412,6 +431,9 @@ class AnthropicProvider(
                         put("name", tool.toolName)
                         put("description", tool.description)
                         put("input_schema", inputSchema)
+                        if (index == sortedTools.lastIndex) {
+                            put("cache_control", JSONObject().put("type", "ephemeral"))
+                        }
                     }
                 )
             }

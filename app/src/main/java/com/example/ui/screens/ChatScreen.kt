@@ -1944,6 +1944,7 @@ private fun MinimalFloatingComposerBar(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
                     BasicTextField(
                         value = draft,
                         onValueChange = onDraftChange,
@@ -1958,6 +1959,7 @@ private fun MinimalFloatingComposerBar(
                         keyboardActions = KeyboardActions(
                             onSend = {
                                 if (draft.isNotBlank() || attachments.isNotEmpty()) {
+                                    focusManager.clearFocus()
                                     onSend()
                                 }
                             }
@@ -1968,9 +1970,15 @@ private fun MinimalFloatingComposerBar(
 
                 // Accent send / stop button on the right
                 val canSend = draft.isNotBlank() || attachments.isNotEmpty()
+                val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
                 Surface(
                     onClick = {
-                        if (isStreaming) onStop() else if (canSend) onSend()
+                        if (isStreaming) {
+                            onStop()
+                        } else if (canSend) {
+                            focusManager.clearFocus()
+                            onSend()
+                        }
                     },
                     enabled = isStreaming || canSend,
                     shape = CircleShape,

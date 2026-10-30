@@ -78,7 +78,11 @@ data class ChatCompletionRequest(
 sealed class ChatStreamEvent {
     data class Delta(val textChunk: String) : ChatStreamEvent()
     data class ToolCall(val call: ModelToolCallRequest) : ChatStreamEvent()
-    data class Usage(val promptTokens: Int, val completionTokens: Int) : ChatStreamEvent()
+    data class Usage(
+        val promptTokens: Int,
+        val completionTokens: Int,
+        val cachedTokens: Int = 0
+    ) : ChatStreamEvent()
     data class Error(val error: NormalizedAiError) : ChatStreamEvent()
     data object Done : ChatStreamEvent()
 }

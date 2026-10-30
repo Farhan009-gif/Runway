@@ -26,6 +26,7 @@ data class ModelPriceEntry(
 data class ProviderTokenUsage(
     val inputTokens: Int,
     val outputTokens: Int,
+    val cachedTokens: Int = 0,
     val isPresent: Boolean
 )
 
@@ -36,6 +37,7 @@ data class ResolvedMessageUsage(
     val modelId: String,
     val inputTokens: Int,
     val outputTokens: Int,
+    val cachedTokens: Int = 0,
     val isTokenCountEstimated: Boolean,
     val estimatedCostUsd: Double
 ) {
@@ -47,6 +49,7 @@ data class ResolvedMessageUsage(
             outputTokens = outputTokens,
             estimatedCostUsd = estimatedCostUsd,
             isTokenCountEstimated = isTokenCountEstimated,
+            cachedTokens = cachedTokens,
             currency = currency
         )
     }
@@ -182,18 +185,28 @@ object ModelPriceTable {
     }
 
     /**
-     * Computes estimated cost in USD from the centralized model price table.
+     * Computes estimated cost in USD from the centralized model price table,
+     * applying cached token discount rate when reported.
      */
     fun calculateCostUsd(
         modelId: String,
         inputTokens: Int,
-        outputTokens: Int
+        outputTokens: Int,
+        cachedTokens: Int = 0
     ): Double {
         val safeIn = inputTokens.coerceAtLeast(0)
         val safeOut = outputTokens.coerceAtLeast(0)
+        val safeCached = cachedTokens.coerceIn(0, safeIn)
+        val uncachedInput = (safeIn - safeCached).coerceAtLeast(0)
         val entry = lookupPricing(modelId)
-        return ((safeIn / 1_000_000.0) * entry.inputUsdPer1M) +
-            ((safeOut / 1_000_000.0) * entry.outputUsdPer1M)
+
+        // Anthropic provides ~90% prompt caching discount (0.1x), OpenAI provides ~50% discount (0.5x)
+        val cacheMultiplier = if (modelId.contains("claude", ignoreCase = true)) 0.1 else 0.5
+        val cachedInputCost = (safeCached / 1_000_000.0) * (entry.inputUsdPer1M * cacheMultiplier)
+        val uncachedInputCost = (uncachedInput / 1_000_000.0) * entry.inputUsdPer1M
+        val outputCost = (safeOut / 1_000_000.0) * entry.outputUsdPer1M
+
+        return cachedInputCost + uncachedInputCost + outputCost
     }
 
     /**
@@ -207,7 +220,7 @@ object ModelPriceTable {
 
     /**
      * Resolves token counts and cost for an assistant turn, including any tool call arguments/results
-     * or sandboxed code execution input/output tokens.
+     * or sandboxed code execution input/output tokens and prompt caching.
      */
     fun resolveTurnUsage(
         modelId: String,
@@ -216,7 +229,8 @@ object ModelPriceTable {
         fallbackInputText: String,
         fallbackOutputText: String,
         additionalToolInputTokens: Int = 0,
-        additionalToolOutputTokens: Int = 0
+        additionalToolOutputTokens: Int = 0,
+        reportedCachedTokens: Int = 0
     ): ResolvedMessageUsage {
         val hasProviderUsage = reportedInputTokens > 0 || reportedOutputTokens > 0
         val baseInput = if (reportedInputTokens > 0) {
@@ -232,12 +246,14 @@ object ModelPriceTable {
         val cost = calculateCostUsd(
             modelId = modelId,
             inputTokens = baseInput,
-            outputTokens = baseOutput
+            outputTokens = baseOutput,
+            cachedTokens = reportedCachedTokens
         )
         return ResolvedMessageUsage(
             modelId = modelId,
             inputTokens = baseInput,
             outputTokens = baseOutput,
+            cachedTokens = reportedCachedTokens,
             isTokenCountEstimated = !hasProviderUsage,
             estimatedCostUsd = cost
         )
@@ -249,16 +265,19 @@ object ModelPriceTable {
     }
 
     /**
-     * Parses OpenAI-compatible `usage` object (`prompt_tokens` / `completion_tokens` or `input_tokens` / `output_tokens`).
+     * Parses OpenAI-compatible `usage` object (`prompt_tokens` / `completion_tokens` and `prompt_tokens_details.cached_tokens`).
      */
     fun parseOpenAiUsage(rootJson: JSONObject): ProviderTokenUsage {
         val usage = rootJson.optJSONObject("usage")
-            ?: return ProviderTokenUsage(0, 0, isPresent = false)
+            ?: return ProviderTokenUsage(0, 0, cachedTokens = 0, isPresent = false)
         val prompt = usage.optInt("prompt_tokens", usage.optInt("input_tokens", 0))
         val completion = usage.optInt("completion_tokens", usage.optInt("output_tokens", 0))
+        val promptDetails = usage.optJSONObject("prompt_tokens_details")
+        val cached = promptDetails?.optInt("cached_tokens", 0) ?: 0
         return ProviderTokenUsage(
             inputTokens = prompt.coerceAtLeast(0),
             outputTokens = completion.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = prompt > 0 || completion > 0
         )
     }
@@ -269,15 +288,18 @@ object ModelPriceTable {
             .takeIf { it > 0 } ?: extractJsonIntField(rawJson, "input_tokens")
         val completion = extractJsonIntField(rawJson, "completion_tokens")
             .takeIf { it > 0 } ?: extractJsonIntField(rawJson, "output_tokens")
+        val cached = extractJsonIntField(rawJson, "cached_tokens")
         return ProviderTokenUsage(
             inputTokens = prompt.coerceAtLeast(0),
             outputTokens = completion.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = prompt > 0 || completion > 0
         )
     }
 
     /**
      * Parses Anthropic `usage` object from `message_start`, `message_delta`, or non-streaming `message` JSON.
+     * Extracts `cache_read_input_tokens` for Anthropic prompt caching.
      */
     fun parseAnthropicUsage(rootJson: JSONObject): ProviderTokenUsage {
         val messageUsage = rootJson.optJSONObject("message")?.optJSONObject("usage")
@@ -286,9 +308,12 @@ object ModelPriceTable {
             .takeIf { it > 0 } ?: (topUsage?.optInt("input_tokens", 0) ?: 0)
         val outTokens = (topUsage?.optInt("output_tokens", 0) ?: 0)
             .takeIf { it > 0 } ?: (messageUsage?.optInt("output_tokens", 0) ?: 0)
+        val cached = (topUsage?.optInt("cache_read_input_tokens", 0) ?: 0)
+            .takeIf { it > 0 } ?: (messageUsage?.optInt("cache_read_input_tokens", 0) ?: 0)
         return ProviderTokenUsage(
             inputTokens = inTokens.coerceAtLeast(0),
             outputTokens = outTokens.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = inTokens > 0 || outTokens > 0
         )
     }
@@ -297,24 +322,28 @@ object ModelPriceTable {
         runCatching { return parseAnthropicUsage(JSONObject(rawJson)) }
         val inTokens = extractJsonIntField(rawJson, "input_tokens")
         val outTokens = extractJsonIntField(rawJson, "output_tokens")
+        val cached = extractJsonIntField(rawJson, "cache_read_input_tokens")
         return ProviderTokenUsage(
             inputTokens = inTokens.coerceAtLeast(0),
             outputTokens = outTokens.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = inTokens > 0 || outTokens > 0
         )
     }
 
     /**
-     * Parses Google Gemini `usageMetadata` object (`promptTokenCount` / `candidatesTokenCount`).
+     * Parses Google Gemini `usageMetadata` object (`promptTokenCount` / `candidatesTokenCount` / `cachedContentTokenCount`).
      */
     fun parseGeminiUsage(rootJson: JSONObject): ProviderTokenUsage {
         val meta = rootJson.optJSONObject("usageMetadata")
-            ?: return ProviderTokenUsage(0, 0, isPresent = false)
+            ?: return ProviderTokenUsage(0, 0, cachedTokens = 0, isPresent = false)
         val prompt = meta.optInt("promptTokenCount", 0)
         val candidates = meta.optInt("candidatesTokenCount", 0)
+        val cached = meta.optInt("cachedContentTokenCount", 0)
         return ProviderTokenUsage(
             inputTokens = prompt.coerceAtLeast(0),
             outputTokens = candidates.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = prompt > 0 || candidates > 0
         )
     }
@@ -323,9 +352,11 @@ object ModelPriceTable {
         runCatching { return parseGeminiUsage(JSONObject(rawJson)) }
         val prompt = extractJsonIntField(rawJson, "promptTokenCount")
         val candidates = extractJsonIntField(rawJson, "candidatesTokenCount")
+        val cached = extractJsonIntField(rawJson, "cachedContentTokenCount")
         return ProviderTokenUsage(
             inputTokens = prompt.coerceAtLeast(0),
             outputTokens = candidates.coerceAtLeast(0),
+            cachedTokens = cached.coerceAtLeast(0),
             isPresent = prompt > 0 || candidates > 0
         )
     }
@@ -348,18 +379,20 @@ object ModelPriceTable {
     /**
      * Formats the per-message usage footer shown under every assistant reply.
      * Labels token counts as "estimated" when the provider returned no usage data,
-     * and always labels cost as "estimated".
+     * shows cached tokens ("cached: N tokens") when reported, and always labels cost as "estimated".
      */
     fun formatMessageUsageFooter(
         inputTokens: Int,
         outputTokens: Int,
         estimatedCostUsd: Double,
         isTokenCountEstimated: Boolean,
+        cachedTokens: Int = 0,
         currency: String = "USD"
     ): String {
         val tokenSuffix = if (isTokenCountEstimated) " (estimated)" else ""
+        val cachedSuffix = if (cachedTokens > 0) " · cached: $cachedTokens tokens" else ""
         val costLabel = formatEstimatedCost(estimatedCostUsd, currency)
-        return "$inputTokens in · $outputTokens out tokens$tokenSuffix · Cost: $costLabel"
+        return "$inputTokens in · $outputTokens out tokens$tokenSuffix$cachedSuffix · Cost: $costLabel"
     }
 
     /**

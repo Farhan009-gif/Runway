@@ -33,7 +33,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RunwayParameterPresetEntity::class,
         RunwayUsageLogEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class OmniDatabase : RoomDatabase() {
@@ -265,6 +265,13 @@ abstract class OmniDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `provider_instances` ADD COLUMN `monthlyLimitUsd` REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `cachedTokens` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): OmniDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -272,7 +279,7 @@ abstract class OmniDatabase : RoomDatabase() {
                     OmniDatabase::class.java,
                     "omniai_studio.db"
                 )
-                    .addMigrations(MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

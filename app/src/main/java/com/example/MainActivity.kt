@@ -22,6 +22,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.HorizontalDivider
@@ -31,15 +44,24 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -254,6 +276,140 @@ private fun BiometricLockScreen(
     }
 }
 
+enum class RunwayBottomTab(val index: Int) {
+    CHAT(0),
+    CREATE(1),
+    AUTOPILOT(2),
+    CONNECT(3),
+    MORE(4);
+
+    companion object {
+        fun fromWorkspaceTab(tab: WorkspaceTab): RunwayBottomTab = when (tab) {
+            WorkspaceTab.CHAT, WorkspaceTab.COMPARE -> CHAT
+            WorkspaceTab.IMAGES, WorkspaceTab.VIDEOS -> CREATE
+            WorkspaceTab.AUTOPILOT -> AUTOPILOT
+            WorkspaceTab.INTEGRATIONS -> CONNECT
+            WorkspaceTab.USAGE, WorkspaceTab.SETTINGS -> MORE
+        }
+    }
+}
+
+@Composable
+private fun rememberSystemAnimationsDisabled(): Boolean {
+    val context = LocalContext.current
+    val resolver = context.contentResolver
+    fun isOff(): Boolean {
+        return try {
+            val duration = android.provider.Settings.Global.getFloat(
+                resolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1.0f
+            )
+            val transition = android.provider.Settings.Global.getFloat(
+                resolver,
+                android.provider.Settings.Global.TRANSITION_ANIMATION_SCALE,
+                1.0f
+            )
+            duration == 0f || transition == 0f
+        } catch (_: Exception) {
+            false
+        }
+    }
+    var disabled by remember { mutableStateOf(isOff()) }
+    DisposableEffect(resolver) {
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                disabled = isOff()
+            }
+        }
+        resolver.registerContentObserver(
+            android.provider.Settings.Global.getUriFor(android.provider.Settings.Global.ANIMATOR_DURATION_SCALE),
+            false,
+            observer
+        )
+        resolver.registerContentObserver(
+            android.provider.Settings.Global.getUriFor(android.provider.Settings.Global.TRANSITION_ANIMATION_SCALE),
+            false,
+            observer
+        )
+        onDispose {
+            resolver.unregisterContentObserver(observer)
+        }
+    }
+    return disabled
+}
+
+private fun Modifier.tabSwipeGestures(
+    enabled: Boolean = true,
+    screenWidthPx: Float,
+    canSwipeLeft: Boolean,
+    canSwipeRight: Boolean,
+    onSwipeNext: () -> Unit,
+    onSwipePrevious: () -> Unit
+): Modifier = if (!enabled) this else this.pointerInput(canSwipeLeft, canSwipeRight, screenWidthPx) {
+    val touchSlop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var totalDragX = 0f
+        var totalDragY = 0f
+        var isHorizontalDrag: Boolean? = null
+        val velocityTracker = VelocityTracker()
+        velocityTracker.addPosition(down.uptimeMillis, down.position)
+
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Main)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+
+            if (!change.pressed) {
+                if (isHorizontalDrag == true) {
+                    val velocity = velocityTracker.calculateVelocity().x
+                    val quarterWidth = screenWidthPx * 0.25f
+                    val minFlingDistance = touchSlop * 2f
+
+                    // Swiping towards left (totalDragX < 0) advances to the tab further right (next)
+                    if (canSwipeLeft && (totalDragX <= -quarterWidth || (totalDragX < -minFlingDistance && velocity <= -1000f))) {
+                        onSwipeNext()
+                    } else if (canSwipeRight && (totalDragX >= quarterWidth || (totalDragX > minFlingDistance && velocity >= 1000f))) {
+                        // Swiping towards right (totalDragX > 0) goes back to the tab on the left (previous)
+                        onSwipePrevious()
+                    }
+                }
+                break
+            }
+
+            if (change.isConsumed && isHorizontalDrag != true) {
+                // If a child (e.g. text selection handle or code sandbox horizontal scroll) already consumed the drag, yield
+                break
+            }
+
+            val dragDelta = change.position - change.previousPosition
+            totalDragX += dragDelta.x
+            totalDragY += dragDelta.y
+            velocityTracker.addPosition(change.uptimeMillis, change.position)
+
+            if (isHorizontalDrag == null) {
+                val absX = kotlin.math.abs(totalDragX)
+                val absY = kotlin.math.abs(totalDragY)
+                if (absY > touchSlop && absY > absX) {
+                    // Vertical scrolling in chat or lists -> yield immediately without consuming
+                    isHorizontalDrag = false
+                    break
+                } else if (absX > touchSlop && absX > absY * 1.5f) {
+                    if ((totalDragX < 0 && canSwipeLeft) || (totalDragX > 0 && canSwipeRight)) {
+                        isHorizontalDrag = true
+                        change.consume()
+                    } else {
+                        isHorizontalDrag = false
+                        break
+                    }
+                }
+            } else if (isHorizontalDrag == true) {
+                change.consume()
+            }
+        }
+    }
+}
+
 @Composable
 private fun OmniStudioRoot(
     uiState: com.example.ui.viewmodel.OmniUiState,
@@ -287,8 +443,10 @@ private fun OmniStudioRoot(
     // Persistent Media Gallery mode inside Create tab (Images | Videos | Gallery)
     var showPersistentGallery by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
 
-    // Sync More sub-tab when navigated via ViewModel or Agent
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    // Sync More sub-tab when navigated via ViewModel or Agent and clear active IME focus
     LaunchedEffect(uiState.currentTab) {
+        focusManager.clearFocus()
         if (uiState.currentTab == WorkspaceTab.USAGE) {
             moreSubTab = 0
         } else if (uiState.currentTab == WorkspaceTab.SETTINGS && moreSubTab == 0) {
@@ -582,8 +740,38 @@ private fun OmniStudioRoot(
     val isConnectSelected = uiState.currentTab == WorkspaceTab.INTEGRATIONS
     val isMoreSelected = uiState.currentTab == WorkspaceTab.USAGE || uiState.currentTab == WorkspaceTab.SETTINGS
 
+    val currentPrimaryTab = remember(uiState.currentTab) {
+        RunwayBottomTab.fromWorkspaceTab(uiState.currentTab)
+    }
+    val areAnimationsDisabled = rememberSystemAnimationsDisabled()
+    val saveableStateHolder = rememberSaveableStateHolder()
+
+    fun switchToBottomTab(tab: RunwayBottomTab) {
+        viewModel.setCompareModeEnabled(false)
+        when (tab) {
+            RunwayBottomTab.CHAT -> viewModel.selectTab(WorkspaceTab.CHAT)
+            RunwayBottomTab.CREATE -> {
+                if (uiState.currentTab != WorkspaceTab.VIDEOS) {
+                    viewModel.selectTab(WorkspaceTab.IMAGES)
+                }
+            }
+            RunwayBottomTab.AUTOPILOT -> viewModel.selectTab(WorkspaceTab.AUTOPILOT)
+            RunwayBottomTab.CONNECT -> viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
+            RunwayBottomTab.MORE -> {
+                if (moreSubTab == 0) {
+                    viewModel.selectTab(WorkspaceTab.USAGE)
+                } else {
+                    viewModel.selectTab(WorkspaceTab.SETTINGS)
+                }
+            }
+        }
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavigationRail = maxWidth >= 760.dp
+        val screenWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+        val canSwipeLeft = currentPrimaryTab.index < RunwayBottomTab.entries.size - 1
+        val canSwipeRight = currentPrimaryTab.index > 0
 
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
@@ -596,29 +784,12 @@ private fun OmniStudioRoot(
                         isAutopilotSelected = isAutopilotSelected,
                         isConnectSelected = isConnectSelected,
                         isMoreSelected = isMoreSelected,
-                        onSelectChat = { viewModel.selectTab(WorkspaceTab.CHAT) },
-                        onSelectCreate = {
-                            viewModel.setCompareModeEnabled(false)
-                            if (uiState.currentTab != WorkspaceTab.VIDEOS) {
-                                viewModel.selectTab(WorkspaceTab.IMAGES)
-                            }
-                        },
-                        onSelectAutopilot = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.AUTOPILOT)
-                        },
-                        onSelectConnect = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
-                        },
-                        onSelectMore = {
-                            viewModel.setCompareModeEnabled(false)
-                            if (moreSubTab == 0) {
-                                viewModel.selectTab(WorkspaceTab.USAGE)
-                            } else {
-                                viewModel.selectTab(WorkspaceTab.SETTINGS)
-                            }
-                        }
+                        onSelectChat = { switchToBottomTab(RunwayBottomTab.CHAT) },
+                        onSelectCreate = { switchToBottomTab(RunwayBottomTab.CREATE) },
+                        onSelectAutopilot = { switchToBottomTab(RunwayBottomTab.AUTOPILOT) },
+                        onSelectConnect = { switchToBottomTab(RunwayBottomTab.CONNECT) },
+                        onSelectMore = { switchToBottomTab(RunwayBottomTab.MORE) },
+                        areAnimationsDisabled = areAnimationsDisabled
                     )
                 }
             }
@@ -635,27 +806,37 @@ private fun OmniStudioRoot(
                         isAutopilotSelected = isAutopilotSelected,
                         isConnectSelected = isConnectSelected,
                         isMoreSelected = isMoreSelected,
-                        onSelectChat = { viewModel.selectTab(WorkspaceTab.CHAT) },
-                        onSelectCreate = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.IMAGES)
-                        },
-                        onSelectAutopilot = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.AUTOPILOT)
-                        },
-                        onSelectConnect = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.INTEGRATIONS)
-                        },
-                        onSelectMore = {
-                            viewModel.setCompareModeEnabled(false)
-                            viewModel.selectTab(WorkspaceTab.SETTINGS)
-                        }
+                        onSelectChat = { switchToBottomTab(RunwayBottomTab.CHAT) },
+                        onSelectCreate = { switchToBottomTab(RunwayBottomTab.CREATE) },
+                        onSelectAutopilot = { switchToBottomTab(RunwayBottomTab.AUTOPILOT) },
+                        onSelectConnect = { switchToBottomTab(RunwayBottomTab.CONNECT) },
+                        onSelectMore = { switchToBottomTab(RunwayBottomTab.MORE) },
+                        areAnimationsDisabled = areAnimationsDisabled
                     )
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .tabSwipeGestures(
+                            enabled = !uiState.showConnectorsScreen,
+                            screenWidthPx = screenWidthPx,
+                            canSwipeLeft = canSwipeLeft,
+                            canSwipeRight = canSwipeRight,
+                            onSwipeNext = {
+                                val nextIndex = currentPrimaryTab.index + 1
+                                if (nextIndex < RunwayBottomTab.entries.size) {
+                                    switchToBottomTab(RunwayBottomTab.entries[nextIndex])
+                                }
+                            },
+                            onSwipePrevious = {
+                                val prevIndex = currentPrimaryTab.index - 1
+                                if (prevIndex >= 0) {
+                                    switchToBottomTab(RunwayBottomTab.entries[prevIndex])
+                                }
+                            }
+                        )
+                ) {
                     if (uiState.showConnectorsScreen) {
                         ConnectorsScreen(
                             mcpServers = mcpServers,
@@ -680,8 +861,33 @@ private fun OmniStudioRoot(
                             onSetAllToolsChoice = viewModel::setConnectorAllToolsChoice,
                             onSetSingleToolChoice = viewModel::setSingleToolChoice
                         )
-                    } else when (uiState.currentTab) {
-                        WorkspaceTab.CHAT, WorkspaceTab.COMPARE -> {
+                    } else {
+                        AnimatedContent(
+                            targetState = currentPrimaryTab,
+                            transitionSpec = {
+                                if (areAnimationsDisabled) {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                } else {
+                                    val direction = if (targetState.index > initialState.index) 1 else -1
+                                    (slideInHorizontally(
+                                        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                        initialOffsetX = { fullWidth -> direction * fullWidth }
+                                    ) + fadeIn(
+                                        animationSpec = tween(durationMillis = 150)
+                                    )) togetherWith (slideOutHorizontally(
+                                        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                        targetOffsetX = { fullWidth -> -direction * fullWidth }
+                                    ) + fadeOut(
+                                        animationSpec = tween(durationMillis = 150)
+                                    ))
+                                }
+                            },
+                            label = "tab_slide_animation",
+                            modifier = Modifier.fillMaxSize()
+                        ) { targetTab ->
+                            saveableStateHolder.SaveableStateProvider(targetTab) {
+                                when (targetTab) {
+                                    RunwayBottomTab.CHAT -> {
                             ChatWorkspaceScreen(
                                 uiState = uiState,
                                 providers = providers,
@@ -767,7 +973,7 @@ private fun OmniStudioRoot(
                             )
                         }
 
-                        WorkspaceTab.IMAGES, WorkspaceTab.VIDEOS -> {
+                        RunwayBottomTab.CREATE -> {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -946,7 +1152,7 @@ private fun OmniStudioRoot(
                             }
                         }
 
-                        WorkspaceTab.AUTOPILOT -> {
+                        RunwayBottomTab.AUTOPILOT -> {
                             OmniAutopilotScreen(
                                 agentState = agentState,
                                 studioUiState = uiState,
@@ -978,7 +1184,7 @@ private fun OmniStudioRoot(
                             )
                         }
 
-                        WorkspaceTab.INTEGRATIONS -> {
+                        RunwayBottomTab.CONNECT -> {
                             IntegrationsWorkspaceScreen(
                                 uiState = uiState,
                                 skills = skills,
@@ -1026,7 +1232,7 @@ private fun OmniStudioRoot(
                             )
                         }
 
-                        WorkspaceTab.USAGE, WorkspaceTab.SETTINGS -> {
+                        RunwayBottomTab.MORE -> {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1141,6 +1347,9 @@ private fun OmniStudioRoot(
                             }
                         }
                     }
+                }
+            }
+        }
 
                     // Slim, rounded, dark Toast at the top with a small check icon, one-line summary, and "Undo" text button.
                     // Auto-dismisses after 4s.
@@ -1183,7 +1392,8 @@ private fun MinimalBottomNavBar(
     onSelectCreate: () -> Unit,
     onSelectAutopilot: () -> Unit,
     onSelectConnect: () -> Unit,
-    onSelectMore: () -> Unit
+    onSelectMore: () -> Unit,
+    areAnimationsDisabled: Boolean = false
 ) {
     Column(
         modifier = Modifier
@@ -1209,6 +1419,7 @@ private fun MinimalBottomNavBar(
                 selected = isChatSelected,
                 onClick = onSelectChat,
                 testTag = "nav_tab_chat",
+                areAnimationsDisabled = areAnimationsDisabled,
                 modifier = Modifier.weight(1f)
             )
             MinimalNavTabItem(
@@ -1217,6 +1428,7 @@ private fun MinimalBottomNavBar(
                 selected = isCreateSelected,
                 onClick = onSelectCreate,
                 testTag = "nav_tab_images",
+                areAnimationsDisabled = areAnimationsDisabled,
                 modifier = Modifier.weight(1f)
             )
             MinimalNavTabItem(
@@ -1225,6 +1437,7 @@ private fun MinimalBottomNavBar(
                 selected = isAutopilotSelected,
                 onClick = onSelectAutopilot,
                 testTag = "nav_tab_autopilot",
+                areAnimationsDisabled = areAnimationsDisabled,
                 modifier = Modifier.weight(1f)
             )
             MinimalNavTabItem(
@@ -1233,6 +1446,7 @@ private fun MinimalBottomNavBar(
                 selected = isConnectSelected,
                 onClick = onSelectConnect,
                 testTag = "nav_tab_integrations",
+                areAnimationsDisabled = areAnimationsDisabled,
                 modifier = Modifier.weight(1f)
             )
             MinimalNavTabItem(
@@ -1241,6 +1455,7 @@ private fun MinimalBottomNavBar(
                 selected = isMoreSelected,
                 onClick = onSelectMore,
                 testTag = "nav_tab_settings",
+                areAnimationsDisabled = areAnimationsDisabled,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -1254,10 +1469,19 @@ private fun MinimalNavTabItem(
     selected: Boolean,
     onClick: () -> Unit,
     testTag: String,
+    areAnimationsDisabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val tint = if (selected) SoftIndigo else MaterialTheme.colorScheme.onSurfaceVariant
     val interactionSource = remember { MutableInteractionSource() }
+    val iconScale by animateFloatAsState(
+        targetValue = if (selected) 1.1f else 1.0f,
+        animationSpec = tween(
+            durationMillis = if (areAnimationsDisabled) 0 else 200,
+            easing = FastOutSlowInEasing
+        ),
+        label = "tab_icon_scale"
+    )
 
     Column(
         modifier = modifier
@@ -1275,7 +1499,12 @@ private fun MinimalNavTabItem(
             imageVector = icon,
             contentDescription = label,
             tint = tint,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier
+                .size(20.dp)
+                .graphicsLayer {
+                    scaleX = iconScale
+                    scaleY = iconScale
+                }
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
@@ -1300,7 +1529,8 @@ private fun MinimalSideNavRail(
     onSelectCreate: () -> Unit,
     onSelectAutopilot: () -> Unit,
     onSelectConnect: () -> Unit,
-    onSelectMore: () -> Unit
+    onSelectMore: () -> Unit,
+    areAnimationsDisabled: Boolean = false
 ) {
     Row(modifier = Modifier.fillMaxHeight()) {
         Column(
@@ -1313,11 +1543,11 @@ private fun MinimalSideNavRail(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            MinimalRailItem("Chat", LucideIcons.Chat, isChatSelected, onSelectChat, "rail_tab_chat")
-            MinimalRailItem("Create", LucideIcons.Sparkles, isCreateSelected, onSelectCreate, "rail_tab_images")
-            MinimalRailItem("Autopilot", LucideIcons.Bot, isAutopilotSelected, onSelectAutopilot, "rail_tab_autopilot")
-            MinimalRailItem("Connect", LucideIcons.Plug, isConnectSelected, onSelectConnect, "rail_tab_integrations")
-            MinimalRailItem("More", LucideIcons.MoreHorizontal, isMoreSelected, onSelectMore, "rail_tab_settings")
+            MinimalRailItem("Chat", LucideIcons.Chat, isChatSelected, onSelectChat, "rail_tab_chat", areAnimationsDisabled)
+            MinimalRailItem("Create", LucideIcons.Sparkles, isCreateSelected, onSelectCreate, "rail_tab_images", areAnimationsDisabled)
+            MinimalRailItem("Autopilot", LucideIcons.Bot, isAutopilotSelected, onSelectAutopilot, "rail_tab_autopilot", areAnimationsDisabled)
+            MinimalRailItem("Connect", LucideIcons.Plug, isConnectSelected, onSelectConnect, "rail_tab_integrations", areAnimationsDisabled)
+            MinimalRailItem("More", LucideIcons.MoreHorizontal, isMoreSelected, onSelectMore, "rail_tab_settings", areAnimationsDisabled)
         }
         Box(
             modifier = Modifier
@@ -1334,9 +1564,18 @@ private fun MinimalRailItem(
     icon: ImageVector,
     selected: Boolean,
     onClick: () -> Unit,
-    testTag: String
+    testTag: String,
+    areAnimationsDisabled: Boolean = false
 ) {
     val tint = if (selected) SoftIndigo else MaterialTheme.colorScheme.onSurfaceVariant
+    val iconScale by animateFloatAsState(
+        targetValue = if (selected) 1.1f else 1.0f,
+        animationSpec = tween(
+            durationMillis = if (areAnimationsDisabled) 0 else 200,
+            easing = FastOutSlowInEasing
+        ),
+        label = "rail_icon_scale"
+    )
     Column(
         modifier = Modifier
             .clickable(onClick = onClick)
@@ -1348,7 +1587,12 @@ private fun MinimalRailItem(
             imageVector = icon,
             contentDescription = label,
             tint = tint,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier
+                .size(20.dp)
+                .graphicsLayer {
+                    scaleX = iconScale
+                    scaleY = iconScale
+                }
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
