@@ -195,10 +195,12 @@ class GeminiProvider(
 
                     val usageMeta = chunkJson.optJSONObject("usageMetadata")
                     if (usageMeta != null) {
-                        val pTokens = usageMeta.optInt("promptTokenCount", 0)
-                        val cTokens = usageMeta.optInt("candidatesTokenCount", 0)
-                        if (pTokens > 0 || cTokens > 0) {
-                            emit(ChatStreamEvent.Usage(pTokens, cTokens))
+                        val parsed = ModelPriceTable.parseGeminiUsage(chunkJson)
+                        val pTokens = parsed?.inputTokens ?: usageMeta.optInt("promptTokenCount", 0)
+                        val cTokens = parsed?.outputTokens ?: usageMeta.optInt("candidatesTokenCount", 0)
+                        val cachedTokens = parsed?.cachedInputTokens ?: usageMeta.optInt("cachedContentTokenCount", 0)
+                        if (pTokens > 0 || cTokens > 0 || cachedTokens > 0) {
+                            emit(ChatStreamEvent.Usage(pTokens, cTokens, cachedTokens))
                         }
                     }
                 }
@@ -221,8 +223,16 @@ class GeminiProvider(
     internal fun buildGeminiPayloadJson(request: ChatCompletionRequest): JSONObject {
         val root = JSONObject()
 
-        if (request.supportsSystemPrompt && request.systemPrompt.isNotBlank()) {
-            val sysParts = JSONArray().put(JSONObject().put("text", request.systemPrompt.trim()))
+        val stableSystemText = if (request.baseSystemPrompt.isNotBlank() || request.enabledSkillsBlock.isNotBlank()) {
+            PromptCacheManager.buildStableSystemPrefix(
+                baseSystemPrompt = request.baseSystemPrompt.ifBlank { request.systemPrompt },
+                enabledSkillsBlock = request.enabledSkillsBlock
+            )
+        } else {
+            request.systemPrompt.trim()
+        }
+        if (request.supportsSystemPrompt && stableSystemText.isNotBlank()) {
+            val sysParts = JSONArray().put(JSONObject().put("text", stableSystemText))
             root.put("systemInstruction", JSONObject().put("parts", sysParts))
         }
 
@@ -321,8 +331,9 @@ class GeminiProvider(
         root.put("contents", contentsArr)
 
         if (request.tools.isNotEmpty()) {
+            val sortedTools = PromptCacheManager.sortToolsDeterministically(request.tools)
             val fnDecls = JSONArray()
-            for (tool in request.tools) {
+            for (tool in sortedTools) {
                 val paramsSchema = runCatching { JSONObject(tool.inputSchemaJson) }.getOrElse {
                     JSONObject().apply {
                         put("type", "object")

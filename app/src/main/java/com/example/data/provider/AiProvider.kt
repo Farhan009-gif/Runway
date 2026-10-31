@@ -17,15 +17,23 @@ enum class ErrorCategory(val badgeLabel: String) {
     CONTENT_POLICY("Content Policy"),
     CLEARTEXT_UNAPPROVED("Unapproved HTTP Host"),
     NETWORK_UNREACHABLE("Network / Gateway Unreachable"),
-    SERVER_ERROR("Provider Error")
+    SERVER_ERROR("Provider Error");
+
+    companion object {
+        val AUTH: ErrorCategory get() = INVALID_KEY
+    }
 }
+
+typealias AiErrorCategory = ErrorCategory
 
 data class NormalizedAiError(
     val category: ErrorCategory,
     val title: String,
     val message: String,
     val suggestedFix: String,
-    val unapprovedHost: String? = null
+    val unapprovedHost: String? = null,
+    val details: String = "",
+    val isRetryable: Boolean = false
 )
 
 data class McpToolDefinition(
@@ -72,7 +80,10 @@ data class ChatCompletionRequest(
     val supportsTemperature: Boolean = true,
     val supportsTopP: Boolean = true,
     val supportsSystemPrompt: Boolean = true,
-    val tools: List<McpToolDefinition> = emptyList()
+    val tools: List<McpToolDefinition> = emptyList(),
+    val baseSystemPrompt: String = "",
+    val enabledSkillsBlock: String = "",
+    val enablePromptCaching: Boolean = false
 )
 
 sealed class ChatStreamEvent {
@@ -81,7 +92,7 @@ sealed class ChatStreamEvent {
     data class Usage(
         val promptTokens: Int,
         val completionTokens: Int,
-        val cachedTokens: Int = 0
+        val cachedInputTokens: Int = 0
     ) : ChatStreamEvent()
     data class Error(val error: NormalizedAiError) : ChatStreamEvent()
     data object Done : ChatStreamEvent()
@@ -448,6 +459,16 @@ object ModelCapabilityRegistry {
 
 object ErrorNormalizer {
 
+    private val tpmOrRpmRegex = Regex(
+        """\b(tpm|rpm)\b|tokens[\s_\-]+per[\s_\-]+min|requests[\s_\-]+per[\s_\-]+min|token[\s_\-]+rate[\s_\-]+limit""",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun hasTpmOrRpmIndicator(rawText: String): Boolean {
+        if (rawText.isBlank()) return false
+        return tpmOrRpmRegex.containsMatchIn(rawText)
+    }
+
     fun normalizeHttpError(
         statusCode: Int,
         responseBody: String,
@@ -455,18 +476,62 @@ object ErrorNormalizer {
         attemptedMethod: String = "POST",
         attemptedUrl: String = ""
     ): NormalizedAiError {
-        val redactedBody = SecretRedactor.redactText(responseBody)
+        val redactedBody = SecretRedactor.redactText(responseBody).trim()
+        val redactedUrl = SecretRedactor.redactUrl(attemptedUrl)
         val lowerBody = redactedBody.lowercase()
+        val detailLine = buildString {
+            append("HTTP $statusCode • $providerName")
+            if (redactedUrl.isNotBlank()) append(" • $attemptedMethod $redactedUrl")
+            if (redactedBody.isNotBlank()) append(" • ${redactedBody.take(240)}")
+        }
+
         return when {
             statusCode == 401 || statusCode == 403 || lowerBody.contains("invalid_api_key") || lowerBody.contains("incorrect api key") -> {
                 NormalizedAiError(
                     category = ErrorCategory.INVALID_KEY,
                     title = "Authentication Failed ($statusCode)",
-                    message = "$providerName rejected the API key or authorization header.",
-                    suggestedFix = "Open Settings -> Providers, verify your API key for $providerName, and tap Test Connection."
+                    message = "Your API key was rejected.",
+                    suggestedFix = "Check the key in Providers.",
+                    details = detailLine
                 )
             }
-            statusCode == 405 || statusCode == 404 -> {
+            statusCode == 404 -> {
+                NormalizedAiError(
+                    category = ErrorCategory.SERVER_ERROR,
+                    title = "Model Not Available (404)",
+                    message = "This model isn't available on this provider.",
+                    suggestedFix = "Pick another model.",
+                    details = detailLine
+                )
+            }
+            statusCode == 413 || hasTpmOrRpmIndicator(redactedBody) -> {
+                NormalizedAiError(
+                    category = ErrorCategory.RATE_LIMIT,
+                    title = "Rate Limited ($statusCode)",
+                    message = "The provider is rate-limited right now.",
+                    suggestedFix = "Wait or switch models.",
+                    details = detailLine
+                )
+            }
+            statusCode == 429 || lowerBody.contains("rate_limit") || lowerBody.contains("too many requests") -> {
+                NormalizedAiError(
+                    category = ErrorCategory.RATE_LIMIT,
+                    title = "Too Many Requests (429)",
+                    message = "Too many requests.",
+                    suggestedFix = "Wait or switch providers.",
+                    details = detailLine
+                )
+            }
+            statusCode in listOf(500, 502, 503, 504) -> {
+                NormalizedAiError(
+                    category = ErrorCategory.SERVER_ERROR,
+                    title = "Provider Trouble ($statusCode)",
+                    message = "The provider is having trouble.",
+                    suggestedFix = "Retry or switch providers.",
+                    details = detailLine
+                )
+            }
+            statusCode == 405 -> {
                 val routeErr = ProviderErrorMapper.fromHttpResponse(
                     statusCode = statusCode,
                     responseBody = redactedBody,
@@ -481,15 +546,8 @@ object ErrorNormalizer {
                     category = ErrorCategory.QUOTA_EXCEEDED,
                     title = "Quota or Billing Limit Reached",
                     message = "$providerName reported insufficient quota or credits.",
-                    suggestedFix = "Switch to another provider or top up your $providerName account."
-                )
-            }
-            statusCode == 429 || lowerBody.contains("rate_limit") -> {
-                NormalizedAiError(
-                    category = ErrorCategory.RATE_LIMIT,
-                    title = "Rate Limit Reached (429)",
-                    message = "Too many requests sent to $providerName in a short window.",
-                    suggestedFix = "Wait a few seconds and tap Regenerate, or switch to another provider."
+                    suggestedFix = "Switch to another provider or top up your $providerName account.",
+                    details = detailLine
                 )
             }
             lowerBody.contains("content_policy") || lowerBody.contains("safety") || lowerBody.contains("moderation") || lowerBody.contains("content_filter") -> {
@@ -497,7 +555,8 @@ object ErrorNormalizer {
                     category = ErrorCategory.CONTENT_POLICY,
                     title = "Blocked by Safety / Content Policy",
                     message = "$providerName declined to fulfill this prompt due to content moderation filters.",
-                    suggestedFix = "Rephrase your prompt or switch models."
+                    suggestedFix = "Rephrase your prompt or switch models.",
+                    details = detailLine
                 )
             }
             else -> {
@@ -506,7 +565,8 @@ object ErrorNormalizer {
                     category = ErrorCategory.SERVER_ERROR,
                     title = "$providerName Error (HTTP $statusCode)",
                     message = snippet,
-                    suggestedFix = "Check that the selected model is supported by $providerName's endpoint."
+                    suggestedFix = "Check that the selected model is supported by $providerName's endpoint.",
+                    details = detailLine
                 )
             }
         }
@@ -519,44 +579,57 @@ object ErrorNormalizer {
     ): NormalizedAiError {
         if (throwable is ProviderErrorException) return throwable.normalizedError
         if (throwable is ProviderNormalizedException) return throwable.normalizedError
-        return when (throwable) {
-            is CleartextHostNotApprovedException -> {
+        val redactedMsg = SecretRedactor.redactText(throwable.message ?: throwable::class.simpleName ?: "Unknown error")
+        val redactedUrl = SecretRedactor.redactUrl(baseUrl)
+        val detailLine = buildString {
+            append("${throwable::class.simpleName ?: "Exception"} • $providerName")
+            if (redactedUrl.isNotBlank()) append(" • $redactedUrl")
+            if (redactedMsg.isNotBlank()) append(" • $redactedMsg")
+        }
+        val lowerMsg = redactedMsg.lowercase()
+
+        return when {
+            throwable is CleartextHostNotApprovedException || lowerMsg.contains("cleartext") -> {
+                val host = (throwable as? CleartextHostNotApprovedException)?.host
+                    ?: baseUrl.removePrefix("http://").removePrefix("https://").substringBefore("/").substringBefore(":")
                 NormalizedAiError(
                     category = ErrorCategory.CLEARTEXT_UNAPPROVED,
-                    title = "Unapproved HTTP Host (${throwable.host})",
-                    message = "Runway blocks unencrypted HTTP requests by default until you whitelist the host.",
-                    suggestedFix = "Tap 'Approve Host' to trust '${throwable.host}' for local LAN / Tailscale traffic, or switch the URL to HTTPS.",
-                    unapprovedHost = throwable.host
+                    title = "Cleartext HTTP Blocked",
+                    message = "Plain HTTP to this address isn't allowed.",
+                    suggestedFix = "Approve the host in Settings.",
+                    unapprovedHost = host.takeIf { it.isNotBlank() },
+                    details = detailLine
                 )
             }
-            is ConnectException, is SocketTimeoutException, is UnknownHostException -> {
-                val isLocalhost = baseUrl.contains("localhost") || baseUrl.contains("127.0.0.1")
-                val hint = if (isLocalhost) {
-                    "On a physical phone, 'localhost' points to the phone itself. Use your computer's LAN IP (e.g. http://192.168.1.x:20128/v1) or Tailscale IP, or http://10.0.2.2:20128/v1 on the Android Emulator."
-                } else {
-                    "Verify that $providerName (${SecretRedactor.redactUrl(baseUrl)}) is running, reachable on your Wi-Fi LAN / Tailscale VPN, and listening on the configured port."
-                }
+            throwable is ConnectException ||
+                throwable is SocketTimeoutException ||
+                throwable is UnknownHostException ||
+                lowerMsg.contains("timeout") ||
+                lowerMsg.contains("timed out") -> {
                 NormalizedAiError(
                     category = ErrorCategory.NETWORK_UNREACHABLE,
-                    title = "Cannot Reach $providerName",
-                    message = SecretRedactor.redactText(throwable.message ?: "Connection timed out or host unreachable."),
-                    suggestedFix = hint
+                    title = "Connection Timed Out",
+                    message = "No connection to the provider.",
+                    suggestedFix = "Check your network or gateway address.",
+                    details = detailLine
                 )
             }
-            is SSLException -> {
+            throwable is SSLException -> {
                 NormalizedAiError(
                     category = ErrorCategory.NETWORK_UNREACHABLE,
                     title = "TLS / Certificate Error",
                     message = "Could not establish a secure HTTPS connection to $providerName.",
-                    suggestedFix = "If connecting to a local OmniRoute server without TLS, use http:// and approve the LAN/Tailscale host."
+                    suggestedFix = "If connecting to a local OmniRoute server without TLS, use http:// and approve the LAN/Tailscale host.",
+                    details = detailLine
                 )
             }
             else -> {
                 NormalizedAiError(
                     category = ErrorCategory.SERVER_ERROR,
                     title = "Request Failed",
-                    message = SecretRedactor.redactText(throwable.message ?: "Unexpected error communicating with $providerName."),
-                    suggestedFix = "Check your network connection and provider base URL in Settings."
+                    message = redactedMsg,
+                    suggestedFix = "Check your network connection and provider base URL in Settings.",
+                    details = detailLine
                 )
             }
         }

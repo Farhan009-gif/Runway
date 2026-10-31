@@ -110,6 +110,7 @@ fun SettingsWorkspaceScreen(
     onSetDynamicColor: (Boolean) -> Unit,
     onSetBiometricGate: (Boolean) -> Unit,
     onSetEnterToSend: (Boolean) -> Unit,
+    onSetReadRepliesAloud: (Boolean) -> Unit = {},
     onSetSpendCurrency: (String) -> Unit = {},
     onOpenOnboardingSheet: () -> Unit,
     onExportSettings: (includeKeys: Boolean) -> Unit,
@@ -122,6 +123,7 @@ fun SettingsWorkspaceScreen(
         onSetThemeMode = onSetThemeMode,
         onSetBiometricGate = onSetBiometricGate,
         onSetEnterToSend = onSetEnterToSend,
+        onSetReadRepliesAloud = onSetReadRepliesAloud,
         onSetSpendCurrency = onSetSpendCurrency,
         onOpenOnboardingSheet = onOpenOnboardingSheet,
         onExportSettings = onExportSettings,
@@ -139,6 +141,7 @@ fun MinimalSettingsAndThemeScreen(
     onSetThemeMode: (String) -> Unit,
     onSetBiometricGate: (Boolean) -> Unit,
     onSetEnterToSend: (Boolean) -> Unit,
+    onSetReadRepliesAloud: (Boolean) -> Unit = {},
     onSetSpendCurrency: (String) -> Unit,
     onOpenOnboardingSheet: () -> Unit,
     onExportSettings: (includeKeys: Boolean) -> Unit,
@@ -229,6 +232,32 @@ fun MinimalSettingsAndThemeScreen(
             Spacer(modifier = Modifier.height(8.dp))
             MinimalCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Read replies aloud",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Speak assistant responses aloud using TextToSpeech",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        MinimalToggle(
+                            checked = uiState.readRepliesAloud,
+                            onCheckedChange = onSetReadRepliesAloud,
+                            testTag = "read_replies_aloud_toggle"
+                        )
+                    }
+
+                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,

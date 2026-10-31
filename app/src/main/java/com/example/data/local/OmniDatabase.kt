@@ -267,8 +267,7 @@ abstract class OmniDatabase : RoomDatabase() {
 
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `provider_instances` ADD COLUMN `monthlyLimitUsd` REAL NOT NULL DEFAULT 0.0")
-                db.execSQL("ALTER TABLE `messages` ADD COLUMN `cachedTokens` INTEGER NOT NULL DEFAULT 0")
+                // Schema is unchanged between v9 and v10; spending limits are stored in TinkSecretVault.
             }
         }
 

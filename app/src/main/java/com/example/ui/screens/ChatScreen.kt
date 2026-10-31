@@ -106,6 +106,8 @@ import com.example.data.local.RunwayFolderEntity
 import com.example.data.local.RunwayMessageNodeEntity
 import com.example.data.local.SkillEntity
 import com.example.data.local.ToolCallLogEntity
+import com.example.data.local.UsageRecordEntity
+import com.example.data.local.FileAttachmentProcessor
 import com.example.data.local.getAttachments
 import com.example.data.mcp.SkillMarkdownParser
 import com.example.data.provider.OmniRouteComboDefinition
@@ -147,6 +149,7 @@ fun ChatWorkspaceScreen(
     conversationMetas: List<RunwayConversationMetaEntity> = emptyList(),
     allMessageNodes: List<RunwayMessageNodeEntity> = emptyList(),
     allDocuments: List<RunwayDocumentEntity> = emptyList(),
+    usageRecords: List<UsageRecordEntity> = emptyList(),
     onSelectConversation: (String) -> Unit,
     onNewConversation: () -> Unit,
     onContinueLatestConversation: () -> Unit = {},
@@ -175,6 +178,9 @@ fun ChatWorkspaceScreen(
     onDraftChange: (String) -> Unit,
     onAttachImage: (String?) -> Unit,
     onAddMediaAttachments: (List<ChatMediaAttachment>) -> Unit = {},
+    onAttachDocumentUris: (List<Uri>) -> Unit = {},
+    onApplyAttachmentPreset: (FileAttachmentProcessor.AttachmentPreset) -> Unit = {},
+    onDismissFirstTimeFileNotice: () -> Unit = {},
     onRemoveMediaAttachment: (Int) -> Unit = {},
     onClearMediaAttachments: () -> Unit = {},
     onSendMessage: () -> Unit,
@@ -194,6 +200,12 @@ fun ChatWorkspaceScreen(
     onOpenProviderSettings: () -> Unit = {},
     onOpenTerminalAndHealthSheet: () -> Unit = {},
     onOpenConnectors: () -> Unit = {},
+    onToggleVoiceInput: () -> Unit = {},
+    onStopVoiceSpeaking: () -> Unit = {},
+    onAcceptCheaperModelSuggestion: (conversationId: String, modelId: String) -> Unit = { _, _ -> },
+    onDismissCheaperModelSuggestion: (conversationId: String) -> Unit = {},
+    onOverrideSpendingLimitOnce: () -> Unit = {},
+    onSetContextTrimmingEnabled: (conversationId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onGenerateMediaInChat: (
         modality: String,
         prompt: String,
@@ -211,6 +223,12 @@ fun ChatWorkspaceScreen(
         description: String
     ) -> Unit = { _, _, _, _, _ -> }
 ) {
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose {
+            onStopVoiceSpeaking()
+        }
+    }
     val activeConversation = remember(conversations, uiState.activeConversationId) {
         conversations.firstOrNull { it.id == uiState.activeConversationId } ?: conversations.firstOrNull()
     }
@@ -273,10 +291,10 @@ fun ChatWorkspaceScreen(
     }
 
     val multiPhotoLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(10)
+        contract = ActivityResultContracts.PickMultipleVisualMedia(FileAttachmentProcessor.MAX_FILES_PER_MESSAGE)
     ) { uris ->
         if (uris.isNotEmpty()) {
-            val items = uris.map { uri ->
+            val items = uris.take(FileAttachmentProcessor.MAX_FILES_PER_MESSAGE).map { uri ->
                 ChatMediaAttachment(
                     uri = uri.toString(),
                     mimeType = "image/jpeg",
@@ -285,6 +303,44 @@ fun ChatWorkspaceScreen(
                 )
             }
             onAddMediaAttachments(items)
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            onAttachDocumentUris(uris.take(FileAttachmentProcessor.MAX_FILES_PER_MESSAGE))
+        }
+    }
+
+    val textFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            onAttachDocumentUris(uris.take(FileAttachmentProcessor.MAX_FILES_PER_MESSAGE))
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            onToggleVoiceInput()
+        } else {
+            onCopiedToast("Microphone permission is needed for voice input.")
+        }
+    }
+
+    val handleMicTap: () -> Unit = {
+        val hasPerm = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (hasPerm) {
+            onToggleVoiceInput()
+        } else {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -307,9 +363,15 @@ fun ChatWorkspaceScreen(
 
     // Rename Conversation Dialog
     renameTarget?.let { target ->
+        val dialogFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val dialogKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
         var newTitle by rememberSaveable(target.id) { mutableStateOf(target.title) }
         AlertDialog(
-            onDismissRequest = { renameTarget = null },
+            onDismissRequest = {
+                dialogFocusManager.clearFocus(force = true)
+                dialogKeyboard?.hide()
+                renameTarget = null
+            },
             containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Rename conversation", style = MaterialTheme.typography.titleMedium) },
             text = {
@@ -325,13 +387,21 @@ fun ChatWorkspaceScreen(
                 MinimalButton(
                     text = "Save",
                     onClick = {
+                        dialogFocusManager.clearFocus(force = true)
+                        dialogKeyboard?.hide()
                         onRenameConversation(target, newTitle)
                         renameTarget = null
                     }
                 )
             },
             dismissButton = {
-                TextButton(onClick = { renameTarget = null }) {
+                TextButton(
+                    onClick = {
+                        dialogFocusManager.clearFocus(force = true)
+                        dialogKeyboard?.hide()
+                        renameTarget = null
+                    }
+                ) {
                     Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -467,6 +537,55 @@ fun ChatWorkspaceScreen(
         ) {
             MinimalToolRow(
                 icon = LucideIcons.Image,
+                title = "Photo",
+                subtitle = "Select photos from your device (up to 5 files, 10 MB each)",
+                onClick = {
+                    showAttachSheet = false
+                    multiPhotoLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                testTag = "attach_sheet_photos"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Layers,
+                title = "Document",
+                subtitle = "PDF, DOCX, CSV, JSON, or code file (max 10 MB, up to 5 per message)",
+                onClick = {
+                    showAttachSheet = false
+                    documentPickerLauncher.launch(
+                        arrayOf(
+                            "application/pdf",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "text/*",
+                            "application/json",
+                            "application/xml",
+                            "application/javascript",
+                            "*/*"
+                        )
+                    )
+                },
+                testTag = "attach_sheet_document"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Code,
+                title = "Text file",
+                subtitle = "TXT, MD, CSV, JSON, or source code files",
+                onClick = {
+                    showAttachSheet = false
+                    textFilePickerLauncher.launch(
+                        arrayOf(
+                            "text/*",
+                            "application/json",
+                            "application/xml",
+                            "application/javascript"
+                        )
+                    )
+                },
+                testTag = "attach_sheet_text_file"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Image,
                 title = "Generate AI image",
                 subtitle = "Synthesize an image directly in chat using Flux, Imagen or SD",
                 onClick = {
@@ -486,18 +605,6 @@ fun ChatWorkspaceScreen(
                     showChatMediaGenerateSheet = true
                 },
                 testTag = "attach_sheet_generate_video"
-            )
-            MinimalToolRow(
-                icon = LucideIcons.Image,
-                title = "Attach photos",
-                subtitle = "Select up to 10 images from your device",
-                onClick = {
-                    showAttachSheet = false
-                    multiPhotoLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                },
-                testTag = "attach_sheet_photos"
             )
             MinimalToolRow(
                 icon = LucideIcons.Video,
@@ -575,6 +682,7 @@ fun ChatWorkspaceScreen(
                         uiState = uiState,
                         providers = providers,
                         models = models,
+                        usageRecords = usageRecords,
                         activeConversation = activeConversation,
                         activeModelName = activeModelDescriptor?.modelId
                             ?: activeConversation?.modelId
@@ -602,7 +710,15 @@ fun ChatWorkspaceScreen(
                         onDismissError = onDismissError,
                         onCopiedToast = onCopiedToast,
                         onPushContentToGitHub = onPushContentToGitHub,
-                        onOpenCompareTargetPicker = onOpenCompareTargetPicker
+                        onOpenCompareTargetPicker = onOpenCompareTargetPicker,
+                        onOpenProviderSettings = onOpenProviderSettings,
+                        onMicClick = handleMicTap,
+                        onApplyAttachmentPreset = onApplyAttachmentPreset,
+                        onDismissFirstTimeFileNotice = onDismissFirstTimeFileNotice,
+                        onAcceptCheaperModelSuggestion = onAcceptCheaperModelSuggestion,
+                        onDismissCheaperModelSuggestion = onDismissCheaperModelSuggestion,
+                        onOverrideSpendingLimitOnce = onOverrideSpendingLimitOnce,
+                        onSetContextTrimmingEnabled = onSetContextTrimmingEnabled
                     )
                 }
             }
@@ -659,6 +775,7 @@ fun ChatWorkspaceScreen(
                     uiState = uiState,
                     providers = providers,
                     models = models,
+                    usageRecords = usageRecords,
                     activeConversation = activeConversation,
                     activeModelName = activeModelDescriptor?.modelId
                         ?: activeConversation?.modelId
@@ -687,7 +804,15 @@ fun ChatWorkspaceScreen(
                     onDismissError = onDismissError,
                     onCopiedToast = onCopiedToast,
                     onPushContentToGitHub = onPushContentToGitHub,
-                    onOpenCompareTargetPicker = onOpenCompareTargetPicker
+                    onOpenCompareTargetPicker = onOpenCompareTargetPicker,
+                    onOpenProviderSettings = onOpenProviderSettings,
+                    onMicClick = handleMicTap,
+                    onApplyAttachmentPreset = onApplyAttachmentPreset,
+                    onDismissFirstTimeFileNotice = onDismissFirstTimeFileNotice,
+                    onAcceptCheaperModelSuggestion = onAcceptCheaperModelSuggestion,
+                    onDismissCheaperModelSuggestion = onDismissCheaperModelSuggestion,
+                    onOverrideSpendingLimitOnce = onOverrideSpendingLimitOnce,
+                    onSetContextTrimmingEnabled = onSetContextTrimmingEnabled
                 )
             }
         }
@@ -771,6 +896,7 @@ private fun MinimalChatCanvas(
     uiState: OmniUiState,
     providers: List<ProviderInstanceEntity> = emptyList(),
     models: List<ModelDescriptorEntity> = emptyList(),
+    usageRecords: List<UsageRecordEntity> = emptyList(),
     activeConversation: ConversationEntity?,
     activeModelName: String,
     isActiveModelCombo: Boolean = false,
@@ -797,7 +923,15 @@ private fun MinimalChatCanvas(
     onDismissError: () -> Unit,
     onCopiedToast: (String) -> Unit,
     onPushContentToGitHub: (title: String, fileName: String, content: String) -> Unit,
-    onOpenCompareTargetPicker: () -> Unit
+    onOpenCompareTargetPicker: () -> Unit,
+    onOpenProviderSettings: () -> Unit = {},
+    onMicClick: () -> Unit = {},
+    onApplyAttachmentPreset: (FileAttachmentProcessor.AttachmentPreset) -> Unit = {},
+    onDismissFirstTimeFileNotice: () -> Unit = {},
+    onAcceptCheaperModelSuggestion: (conversationId: String, modelId: String) -> Unit = { _, _ -> },
+    onDismissCheaperModelSuggestion: (conversationId: String) -> Unit = {},
+    onOverrideSpendingLimitOnce: () -> Unit = {},
+    onSetContextTrimmingEnabled: (conversationId: String, enabled: Boolean) -> Unit = { _, _ -> }
 ) {
     val listState = rememberLazyListState()
 
@@ -990,47 +1124,266 @@ private fun MinimalChatCanvas(
             }
         }
 
-        // Subtle error banner if present
-        uiState.activeError?.let { err ->
+        // Provider Monthly Spending Limit Evaluation (80% warning & 100% block banner)
+        val activeProvider = remember(providers, activeConversation) {
+            providers.firstOrNull { it.id == activeConversation?.providerInstanceId }
+        }
+        val spendingEvaluation = remember(
+            activeProvider,
+            usageRecords,
+            uiState.providerMonthlyLimitsUsd,
+            uiState.spendingLimitActiveOverrideChatIds,
+            uiState.spendingLimitUsedOverrideChatIds,
+            activeConversation?.id
+        ) {
+            if (activeProvider == null) null
+            else {
+                val limitUsd = uiState.providerMonthlyLimitsUsd[activeProvider.id]
+                val monthlySpend = com.example.data.provider.ProviderSpendingLimitEvaluator.calculateMonthlySpendUsd(
+                    usageRecords = usageRecords,
+                    providerInstanceId = activeProvider.id
+                )
+                val convId = activeConversation?.id.orEmpty()
+                com.example.data.provider.ProviderSpendingLimitEvaluator.evaluate(
+                    providerInstanceId = activeProvider.id,
+                    providerDisplayName = activeProvider.displayName,
+                    monthlySpendUsd = monthlySpend,
+                    monthlyLimitUsd = limitUsd,
+                    hasActiveOverrideForChat = convId in uiState.spendingLimitActiveOverrideChatIds,
+                    hasUsedOverrideInChat = convId in uiState.spendingLimitUsedOverrideChatIds
+                )
+            }
+        }
+
+        if (spendingEvaluation != null && (spendingEvaluation.isWarning || spendingEvaluation.isBlocked)) {
+            val isBlocked = spendingEvaluation.isBlocked
+            val bannerColor = if (isBlocked) CoralError else SoftIndigo
             MinimalCard(
-                borderColor = CoralError.copy(alpha = 0.4f),
+                borderColor = bannerColor.copy(alpha = 0.5f),
                 contentPadding = PaddingValues(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .testTag(if (isBlocked) "spending_limit_blocked_banner" else "spending_limit_warning_banner")
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isBlocked) {
+                                spendingEvaluation.blockedMessage
+                                    ?: "Monthly limit reached for ${spendingEvaluation.providerDisplayName}. Raise the limit in Settings to continue."
+                            } else {
+                                spendingEvaluation.warningMessage ?: spendingEvaluation.progressText
+                            },
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = spendingEvaluation.progressText,
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (isBlocked && spendingEvaluation.canOverrideOnce) {
+                                Text(
+                                    text = "Override once",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = SoftIndigo,
+                                    modifier = Modifier
+                                        .clickable(onClick = onOverrideSpendingLimitOnce)
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                        .testTag("spending_limit_override_once_button")
+                                )
+                            }
+                            Text(
+                                text = "Settings",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = SoftIndigo,
+                                modifier = Modifier
+                                    .clickable(onClick = onOpenProviderSettings)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                                    .testTag("spending_limit_open_settings_button")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cheaper model suggestion card ("Try <model> to save about X%") after > 50,000 tokens on top-tier model
+        val activeConvId = activeConversation?.id
+        val cheaperSuggestion = activeConvId?.let { uiState.cheaperModelSuggestionByChatId[it] }
+        if (activeConvId != null && cheaperSuggestion != null) {
+            MinimalCard(
+                borderColor = SoftIndigo.copy(alpha = 0.5f),
+                contentPadding = PaddingValues(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .testTag("cheaper_model_suggestion_card")
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = cheaperSuggestion.bannerText,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "This chat has used over 50,000 tokens.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MinimalChip(
+                            label = "Switch",
+                            selected = true,
+                            onClick = {
+                                onAcceptCheaperModelSuggestion(activeConvId, cheaperSuggestion.suggestedModelId)
+                            },
+                            testTag = "cheaper_model_switch_button"
+                        )
+                        Icon(
+                            imageVector = LucideIcons.X,
+                            contentDescription = "Dismiss suggestion",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable { onDismissCheaperModelSuggestion(activeConvId) }
+                                .testTag("cheaper_model_dismiss_button")
+                        )
+                    }
+                }
+            }
+        }
+
+        // Structured Error Card: Title, plain cause, one next step, and collapsible "Details" line
+        uiState.activeError?.let { err ->
+            var showErrorDetails by rememberSaveable(err.title, err.message) { mutableStateOf(false) }
+            MinimalCard(
+                borderColor = CoralError.copy(alpha = 0.45f),
+                contentPadding = PaddingValues(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    .testTag("structured_error_card")
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = err.title,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = CoralError,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("structured_error_title")
+                        )
+                        Icon(
+                            imageVector = LucideIcons.X,
+                            contentDescription = "Dismiss",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable(onClick = onDismissError)
+                                .testTag("structured_error_dismiss")
+                        )
+                    }
                     Text(
                         text = err.message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.testTag("structured_error_cause")
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    if (err.unapprovedHost != null) {
+                    if (err.suggestedFix.isNotBlank()) {
                         Text(
-                            text = "Approve",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                            color = SoftIndigo,
-                            modifier = Modifier
-                                .clickable { onApproveCleartextHostFromError(err.unapprovedHost) }
-                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                            text = err.suggestedFix,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.testTag("structured_error_next_step")
                         )
                     }
-                    Icon(
-                        imageVector = LucideIcons.X,
-                        contentDescription = "Dismiss",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable(onClick = onDismissError)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val detailsText = err.details.ifBlank { "${err.category.name}: ${err.title}" }
+                        Text(
+                            text = if (showErrorDetails) "Hide Details" else "Details",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = SoftIndigo,
+                            modifier = Modifier
+                                .clickable { showErrorDetails = !showErrorDetails }
+                                .padding(vertical = 2.dp)
+                                .testTag("structured_error_details_toggle")
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (err.unapprovedHost != null) {
+                                Text(
+                                    text = "Approve",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = SoftIndigo,
+                                    modifier = Modifier
+                                        .clickable { onApproveCleartextHostFromError(err.unapprovedHost) }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            if (err.category == com.example.data.provider.AiErrorCategory.AUTH ||
+                                err.suggestedFix.contains("Providers", ignoreCase = true) ||
+                                err.suggestedFix.contains("Settings", ignoreCase = true)
+                            ) {
+                                Text(
+                                    text = "Open Providers",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = SoftIndigo,
+                                    modifier = Modifier
+                                        .clickable(onClick = onOpenProviderSettings)
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    if (showErrorDetails) {
+                        val detailsText = err.details.ifBlank { "${err.category.name}: ${err.title}" }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.background,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("structured_error_details_content")
+                        ) {
+                            Text(
+                                text = detailsText,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonospaceFontFamily),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1072,6 +1425,7 @@ private fun MinimalChatCanvas(
                                     toolLogs = msgLogs,
                                     isLastAssistantMessage = msg.id == lastAssistantId,
                                     isTokenCountEstimated = msg.id in uiState.estimatedTokenMessageIds,
+                                    cachedInputTokens = uiState.cachedTokensByMessageId[msg.id] ?: 0,
                                     activeToolLoopStatus = if (msg.isStreaming) uiState.activeToolLoopStatus else null,
                                     onEditUserMessage = { onStartEditMessage(msg) },
                                     onRegenerate = onRegenerateLast,
@@ -1087,6 +1441,7 @@ private fun MinimalChatCanvas(
                                     models = models,
                                     combos = uiState.omniRouteCombos,
                                     estimatedMessageIds = uiState.estimatedTokenMessageIds,
+                                    cachedTokensByMessageId = uiState.cachedTokensByMessageId,
                                     onCopiedToast = onCopiedToast
                                 )
                             }
@@ -1104,7 +1459,8 @@ private fun MinimalChatCanvas(
             val conversationSummaryText = remember(
                 completedAssistantMessages,
                 conversationToolLogs,
-                uiState.estimatedTokenMessageIds
+                uiState.estimatedTokenMessageIds,
+                uiState.cachedTokensByMessageId
             ) {
                 val totalIn = completedAssistantMessages.sumOf { msg ->
                     if (msg.promptTokens > 0) msg.promptTokens
@@ -1114,12 +1470,16 @@ private fun MinimalChatCanvas(
                     if (msg.completionTokens > 0) msg.completionTokens
                     else com.example.data.provider.ModelPriceTable.estimateTokensFromText(msg.content)
                 }
+                val totalCached = completedAssistantMessages.sumOf { msg ->
+                    uiState.cachedTokensByMessageId[msg.id] ?: 0
+                }
                 val totalCost = completedAssistantMessages.sumOf { msg ->
                     if (msg.estimatedCostUsd > 0.0) msg.estimatedCostUsd
                     else com.example.data.provider.ModelPriceTable.calculateCostUsd(
                         modelId = msg.modelId,
                         inputTokens = if (msg.promptTokens > 0) msg.promptTokens else 1,
-                        outputTokens = if (msg.completionTokens > 0) msg.completionTokens else 1
+                        outputTokens = if (msg.completionTokens > 0) msg.completionTokens else 1,
+                        cachedInputTokens = uiState.cachedTokensByMessageId[msg.id] ?: 0
                     )
                 }
                 val hasEstimated = completedAssistantMessages.any { msg ->
@@ -1136,7 +1496,8 @@ private fun MinimalChatCanvas(
                     totalEstimatedCostUsd = totalCost,
                     toolCallsCount = mcpToolCallsCount,
                     codeRunsCount = codeRunsCount,
-                    hasEstimatedTokens = hasEstimated
+                    hasEstimatedTokens = hasEstimated,
+                    totalCachedInputTokens = totalCached
                 )
             }
             Surface(
@@ -1195,15 +1556,126 @@ private fun MinimalChatCanvas(
             }
         }
 
+        // Smart Context Trimming line above the composer: "Older messages summarised to save context."
+        // Tap to view the summary or turn trimming off for this chat (default on).
+        var showContextSummaryDialog by rememberSaveable { mutableStateOf(false) }
+        val activeSummaryText = activeConvId?.let { uiState.contextSummaryByChatId[it] }
+        val isContextTrimmingEnabled = activeConvId?.let { uiState.contextTrimmingEnabledByChatId[it] ?: true } ?: true
+
+        if (showContextSummaryDialog && activeConvId != null) {
+            AlertDialog(
+                onDismissRequest = { showContextSummaryDialog = false },
+                containerColor = MaterialTheme.colorScheme.surface,
+                title = {
+                    Text(
+                        text = "Context Summary",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = activeSummaryText?.ifBlank { "No summary generated yet." } ?: "No summary generated yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Smart context trimming for this chat",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            com.example.ui.components.MinimalToggle(
+                                checked = isContextTrimmingEnabled,
+                                onCheckedChange = { enabled ->
+                                    onSetContextTrimmingEnabled(activeConvId, enabled)
+                                    if (!enabled) {
+                                        showContextSummaryDialog = false
+                                    }
+                                },
+                                testTag = "context_trimming_chat_toggle"
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    MinimalButton(
+                        text = "Close",
+                        onClick = { showContextSummaryDialog = false }
+                    )
+                }
+            )
+        }
+
+        if (!activeSummaryText.isNullOrBlank() && isContextTrimmingEnabled) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showContextSummaryDialog = true }
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("context_trimming_summary_line")
+            ) {
+                Text(
+                    text = com.example.data.provider.SmartContextTrimmer.COMPOSER_NOTICE_TEXT,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SoftIndigo
+                )
+            }
+        }
+
+        // First-time file attachment notice: "Attached files are sent to <provider>"
+        uiState.showFirstTimeFileNoticeForProvider?.let { provName ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, SoftIndigo.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .testTag("first_time_file_attachment_notice")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = FileAttachmentProcessor.formatFirstTimeNotice(provName),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = LucideIcons.X,
+                        contentDescription = "Dismiss notice",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clickable(onClick = onDismissFirstTimeFileNotice)
+                    )
+                }
+            }
+        }
+
         // Floating Minimal Input Bar
         MinimalFloatingComposerBar(
             draft = uiState.draftMessage,
             isStreaming = uiState.isStreaming,
+            isVoiceListening = uiState.isVoiceListening,
             enterToSend = uiState.enterToSendEnabled,
             editingMessageId = uiState.editingMessageId,
             attachments = currentAttachments,
             onDraftChange = onDraftChange,
             onOpenAttachOptions = onOpenAttachSheet,
+            onMicClick = onMicClick,
+            onApplyAttachmentPreset = onApplyAttachmentPreset,
             onRemoveAttachment = { idx ->
                 if (uiState.attachedMediaList.isNotEmpty()) {
                     onRemoveMediaAttachment(idx)
@@ -1423,6 +1895,7 @@ private fun MinimalChatMessageItem(
     toolLogs: List<ToolCallLogEntity>,
     isLastAssistantMessage: Boolean,
     isTokenCountEstimated: Boolean = false,
+    cachedInputTokens: Int = 0,
     activeToolLoopStatus: String? = null,
     onEditUserMessage: () -> Unit,
     onRegenerate: () -> Unit,
@@ -1471,34 +1944,62 @@ private fun MinimalChatMessageItem(
                             modifier = Modifier.horizontalScroll(rememberScrollState())
                         ) {
                             attachments.forEach { media ->
-                                Box(
-                                    modifier = Modifier
-                                        .size(64.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                                        .clickable {
-                                            if (!media.isVideo) {
-                                                fullScreenAttachmentUri = media.uri
-                                            } else {
-                                                fullScreenVideoUri = media.uri
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (media.isVideo) {
-                                        Icon(
-                                            imageVector = LucideIcons.Video,
-                                            contentDescription = "Video",
-                                            tint = SoftIndigo,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    } else {
-                                        AsyncImage(
-                                            model = media.uri,
-                                            contentDescription = "Attached photo",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
+                                if (media.isDocument) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = LucideIcons.Code,
+                                                contentDescription = "Document",
+                                                tint = SoftIndigo,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = media.fileName.ifBlank { "document.txt" },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(64.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                            .clickable {
+                                                if (!media.isVideo) {
+                                                    fullScreenAttachmentUri = media.uri
+                                                } else {
+                                                    fullScreenVideoUri = media.uri
+                                                }
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (media.isVideo) {
+                                            Icon(
+                                                imageVector = LucideIcons.Video,
+                                                contentDescription = "Video",
+                                                tint = SoftIndigo,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        } else {
+                                            AsyncImage(
+                                                model = media.uri,
+                                                contentDescription = "Attached photo",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1598,7 +2099,8 @@ private fun MinimalChatMessageItem(
                         message.estimatedCostUsd,
                         message.modelId,
                         message.content,
-                        isTokenCountEstimated
+                        isTokenCountEstimated,
+                        cachedInputTokens
                     ) {
                         val inTok = if (message.promptTokens > 0) {
                             message.promptTokens
@@ -1617,14 +2119,16 @@ private fun MinimalChatMessageItem(
                             com.example.data.provider.ModelPriceTable.calculateCostUsd(
                                 modelId = message.modelId,
                                 inputTokens = inTok,
-                                outputTokens = outTok
+                                outputTokens = outTok,
+                                cachedInputTokens = cachedInputTokens
                             )
                         }
                         com.example.data.provider.ModelPriceTable.formatMessageUsageFooter(
                             inputTokens = inTok,
                             outputTokens = outTok,
                             estimatedCostUsd = costVal,
-                            isTokenCountEstimated = estTokensFlag
+                            isTokenCountEstimated = estTokensFlag,
+                            cachedInputTokens = cachedInputTokens
                         )
                     }
                     Text(
@@ -1699,6 +2203,7 @@ private fun MinimalComparisonRow(
     models: List<ModelDescriptorEntity> = emptyList(),
     combos: List<OmniRouteComboDefinition> = emptyList(),
     estimatedMessageIds: Set<String> = emptySet(),
+    cachedTokensByMessageId: Map<String, Int> = emptyMap(),
     onCopiedToast: (String) -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
@@ -1773,6 +2278,7 @@ private fun MinimalComparisonRow(
                     onCopiedToast = onCopiedToast
                 )
                 if (!resp.isStreaming && resp.content.isNotBlank()) {
+                    val cachedTok = cachedTokensByMessageId[resp.id] ?: 0
                     val footer = com.example.data.provider.ModelPriceTable.formatMessageUsageFooter(
                         inputTokens = resp.promptTokens.takeIf { it > 0 }
                             ?: com.example.data.provider.ModelPriceTable.estimateTokensFromText(resp.content),
@@ -1782,9 +2288,11 @@ private fun MinimalComparisonRow(
                             ?: com.example.data.provider.ModelPriceTable.calculateCostUsd(
                                 resp.modelId,
                                 resp.promptTokens.coerceAtLeast(1),
-                                resp.completionTokens.coerceAtLeast(1)
+                                resp.completionTokens.coerceAtLeast(1),
+                                cachedTok
                             ),
-                        isTokenCountEstimated = resp.id in estimatedMessageIds || (resp.promptTokens == 0 && resp.completionTokens == 0)
+                        isTokenCountEstimated = resp.id in estimatedMessageIds || (resp.promptTokens == 0 && resp.completionTokens == 0),
+                        cachedInputTokens = cachedTok
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
@@ -1806,11 +2314,14 @@ private fun MinimalComparisonRow(
 private fun MinimalFloatingComposerBar(
     draft: String,
     isStreaming: Boolean,
+    isVoiceListening: Boolean = false,
     enterToSend: Boolean,
     editingMessageId: String?,
     attachments: List<ChatMediaAttachment>,
     onDraftChange: (String) -> Unit,
     onOpenAttachOptions: () -> Unit,
+    onMicClick: () -> Unit = {},
+    onApplyAttachmentPreset: (FileAttachmentProcessor.AttachmentPreset) -> Unit = {},
     onRemoveAttachment: (Int) -> Unit,
     onCancelEdit: () -> Unit,
     onSend: () -> Unit,
@@ -1845,57 +2356,116 @@ private fun MinimalFloatingComposerBar(
             }
         }
 
-        // Attached media strip
+        // Attached media & document chips with an X + Preset actions strip
         if (attachments.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 attachments.forEachIndexed { index, item ->
-                    Box(
-                        modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-                    ) {
-                        if (item.isVideo) {
-                            Icon(
-                                imageVector = LucideIcons.Video,
-                                contentDescription = "Video",
-                                tint = SoftIndigo,
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .align(Alignment.Center)
-                            )
-                        } else {
-                            AsyncImage(
-                                model = item.uri,
-                                contentDescription = "Attachment",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                    if (item.isDocument) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier.testTag("attachment_chip_$index")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = LucideIcons.Code,
+                                    contentDescription = "Document",
+                                    tint = SoftIndigo,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = item.fileName.ifBlank { "document.txt" },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 150.dp)
+                                )
+                                Icon(
+                                    imageVector = LucideIcons.X,
+                                    contentDescription = "Remove attachment",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { onRemoveAttachment(index) }
+                                        .testTag("remove_attachment_chip_$index")
+                                )
+                            }
                         }
+                    } else {
                         Box(
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(3.dp)
-                                .size(16.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f))
-                                .clickable { onRemoveAttachment(index) },
-                            contentAlignment = Alignment.Center
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+                                .testTag("attachment_chip_$index")
                         ) {
-                            Icon(
-                                imageVector = LucideIcons.X,
-                                contentDescription = "Remove",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(10.dp)
-                            )
+                            if (item.isVideo) {
+                                Icon(
+                                    imageVector = LucideIcons.Video,
+                                    contentDescription = "Video",
+                                    tint = SoftIndigo,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .align(Alignment.Center)
+                                )
+                            } else {
+                                AsyncImage(
+                                    model = item.uri,
+                                    contentDescription = "Attachment",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(3.dp)
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f))
+                                    .clickable { onRemoveAttachment(index) }
+                                    .testTag("remove_attachment_chip_$index"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = LucideIcons.X,
+                                    contentDescription = "Remove",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                            }
                         }
                     }
+                }
+            }
+
+            // Presets: Summarise, Find key points, Analyse data, Explain code, Compare two files
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FileAttachmentProcessor.PRESET_ACTIONS.forEach { preset ->
+                    MinimalChip(
+                        label = preset.label,
+                        selected = false,
+                        onClick = { onApplyAttachmentPreset(preset) },
+                        testTag = "attachment_preset_${preset.label.lowercase().replace(' ', '_')}"
+                    )
                 }
             }
         }
@@ -1939,12 +2509,11 @@ private fun MinimalFloatingComposerBar(
                 ) {
                     if (draft.isEmpty()) {
                         Text(
-                            text = "Message…",
+                            text = if (isVoiceListening) "Listening…" else "Message…",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isVoiceListening) SoftIndigo else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
                     BasicTextField(
                         value = draft,
                         onValueChange = onDraftChange,
@@ -1959,7 +2528,6 @@ private fun MinimalFloatingComposerBar(
                         keyboardActions = KeyboardActions(
                             onSend = {
                                 if (draft.isNotBlank() || attachments.isNotEmpty()) {
-                                    focusManager.clearFocus()
                                     onSend()
                                 }
                             }
@@ -1968,17 +2536,26 @@ private fun MinimalFloatingComposerBar(
                     )
                 }
 
+                // Mic button in the composer (SpeechRecognizer; asks RECORD_AUDIO permission on first tap)
+                IconButton(
+                    onClick = onMicClick,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .testTag("composer_mic_button")
+                ) {
+                    Icon(
+                        imageVector = LucideIcons.Mic,
+                        contentDescription = if (isVoiceListening) "Stop voice input" else "Voice input",
+                        tint = if (isVoiceListening) CoralError else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
                 // Accent send / stop button on the right
                 val canSend = draft.isNotBlank() || attachments.isNotEmpty()
-                val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
                 Surface(
                     onClick = {
-                        if (isStreaming) {
-                            onStop()
-                        } else if (canSend) {
-                            focusManager.clearFocus()
-                            onSend()
-                        }
+                        if (isStreaming) onStop() else if (canSend) onSend()
                     },
                     enabled = isStreaming || canSend,
                     shape = CircleShape,

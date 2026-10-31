@@ -52,9 +52,6 @@ import com.example.data.provider.ProviderHealth
 import com.example.data.provider.ProviderNormalizedException
 import com.example.data.provider.RequestDiagnosticEntry
 import com.example.data.provider.VideoGenerationRequest
-import com.example.data.provider.CheaperModelSuggestion
-import com.example.data.provider.FriendlyError
-import com.example.data.provider.AttachedDocFile
 import com.example.data.repository.OmniRepository
 import com.example.data.security.TinkSecretVault
 import com.example.data.security.VaultSecurityStatus
@@ -276,26 +273,24 @@ data class OmniUiState(
     val repoFilesList: List<String> = emptyList(),
     val viewingRepoFilePath: String? = null,
     val viewingRepoFileContent: String? = null,
-    // Voice
-    val isReadingRepliesAloud: Boolean = false,
-    val isListeningToVoice: Boolean = false,
-    // Cheaper Model Suggestion
-    val cheaperModelSuggestion: com.example.data.provider.CheaperModelSuggestion? = null,
-    // Provider Spending Limits
-    val spendingLimitWarningBanner: String? = null,
-    val spendingLimitBlockedProvider: ProviderInstanceEntity? = null,
-    val overriddenSpendingLimitProviderIds: Set<String> = emptySet(),
-    // Friendly Error Messages
-    val friendlyErrorState: com.example.data.provider.FriendlyError? = null,
-    // File Attachments
-    val attachedDocFiles: List<com.example.data.provider.AttachedDocFile> = emptyList(),
-    val hasSeenProviderFileNotice: Boolean = false,
-    val showProviderFileNotice: Boolean = false,
-    // Smart Context Trimming
-    val isContextTrimmingEnabled: Boolean = true,
-    val isContextTrimmedForChat: Boolean = false,
-    val activeTrimmedSummary: String? = null,
-    val showTrimmedSummaryDialog: Boolean = false
+    // 1. Voice (SpeechRecognizer + TextToSpeech)
+    val readRepliesAloud: Boolean = false,
+    val isVoiceListening: Boolean = false,
+    // 2. Cheaper Model Suggestion
+    val cheaperModelSuggestionByChatId: Map<String, com.example.data.provider.CheaperModelSuggestion> = emptyMap(),
+    val dismissedCheaperSuggestionChatIds: Set<String> = emptySet(),
+    // 3. Spending Limit Per Provider
+    val providerMonthlyLimitsUsd: Map<String, Double> = emptyMap(),
+    val spendingLimitActiveOverrideChatIds: Set<String> = emptySet(),
+    val spendingLimitUsedOverrideChatIds: Set<String> = emptySet(),
+    // 5. File Attachments
+    val hasSeenFileAttachmentNotice: Boolean = false,
+    val showFirstTimeFileNoticeForProvider: String? = null,
+    // 6. Prompt Caching
+    val cachedTokensByMessageId: Map<String, Int> = emptyMap(),
+    // 7. Smart Context Trimming
+    val contextTrimmingEnabledByChatId: Map<String, Boolean> = emptyMap(),
+    val contextSummaryByChatId: Map<String, String> = emptyMap()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -307,6 +302,8 @@ class OmniStudioViewModel(
 
     private val _uiState = MutableStateFlow(OmniUiState())
     val uiState: StateFlow<OmniUiState> = _uiState.asStateFlow()
+
+    val voiceManager = com.example.data.voice.RunwayVoiceManager(repository.appContext)
 
     val providers: StateFlow<List<ProviderInstanceEntity>> = repository.providersFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -417,6 +414,32 @@ class OmniStudioViewModel(
     private val conversationAllowedCodeExecutionIds = mutableSetOf<String>()
 
     init {
+        viewModelScope.launch {
+            voiceManager.isListening.collect { listening ->
+                _uiState.update { it.copy(isVoiceListening = listening) }
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                repository.secretVault.readRepliesAloudFlow,
+                repository.secretVault.providerSpendingLimitsJsonFlow,
+                repository.secretVault.hasSeenFileAttachmentNoticeFlow
+            ) { readAloud, limitsJson, seenNotice ->
+                Triple(
+                    readAloud,
+                    com.example.data.provider.ProviderSpendingLimitEvaluator.parseLimitsJson(limitsJson),
+                    seenNotice
+                )
+            }.collect { (readAloud, limitsMap, seenNotice) ->
+                _uiState.update { state ->
+                    state.copy(
+                        readRepliesAloud = readAloud,
+                        providerMonthlyLimitsUsd = limitsMap,
+                        hasSeenFileAttachmentNotice = seenNotice
+                    )
+                }
+            }
+        }
         if (autoInitialize) {
             viewModelScope.launch {
                 EmbeddedOmniRouteServer.statusFlow.collect { st ->
@@ -627,6 +650,9 @@ class OmniStudioViewModel(
     // --- Navigation & Modals ---
 
     fun selectTab(tab: WorkspaceTab) {
+        if (tab != WorkspaceTab.CHAT) {
+            voiceManager.stopSpeaking()
+        }
         _uiState.update {
             it.copy(
                 currentTab = tab,
@@ -2237,6 +2263,7 @@ class OmniStudioViewModel(
     // --- Conversations, Streaming Chat & Side-by-Side Compare Mode ---
 
     fun selectConversation(conversationId: String) {
+        voiceManager.stopSpeaking()
         activeConvIdFlow.value = conversationId
         _uiState.update {
             it.copy(
@@ -2250,6 +2277,7 @@ class OmniStudioViewModel(
         preferredProviderId: String? = null,
         preferredModelId: String? = null
     ) {
+        voiceManager.stopSpeaking()
         viewModelScope.launch {
             val allProviders = providers.value
             val defaultProvider = allProviders.firstOrNull { it.id == preferredProviderId }
@@ -2593,22 +2621,44 @@ class OmniStudioViewModel(
             _uiState.update { it.copy(attachedImageUri = null, attachedMediaList = emptyList()) }
         } else {
             val attachment = com.example.data.local.ChatMediaAttachment(uri = uriString, isVideo = false)
-            _uiState.update {
-                it.copy(
-                    attachedImageUri = uriString,
-                    attachedMediaList = listOf(attachment)
-                )
-            }
+            addMediaAttachments(listOf(attachment))
         }
     }
 
     fun addMediaAttachments(newItems: List<com.example.data.local.ChatMediaAttachment>) {
         if (newItems.isEmpty()) return
+        val currentState = _uiState.value
+        val existingCount = currentState.attachedMediaList.size
+        val firstNew = newItems.first()
+        val validation = com.example.data.local.FileAttachmentProcessor.validateAttachmentLimits(
+            existingCount = existingCount,
+            newFileSizeBytes = firstNew.sizeBytes,
+            newFileName = firstNew.fileName
+        )
+        if (!validation.isValid) {
+            _uiState.update { it.copy(statusToast = validation.errorMessage) }
+            return
+        }
+        val activeConvId = currentState.activeConversationId
+        val activeConv = conversations.value.firstOrNull { it.id == activeConvId }
+        val activeProvName = providers.value.firstOrNull { it.id == activeConv?.providerInstanceId }?.displayName
+            ?: providers.value.firstOrNull { it.isDefaultForChat }?.displayName
+            ?: "the selected provider"
+        val shouldShowNotice = !currentState.hasSeenFileAttachmentNotice
+        if (shouldShowNotice) {
+            viewModelScope.launch {
+                repository.secretVault.setHasSeenFileAttachmentNotice(true)
+            }
+        }
         _uiState.update { current ->
-            val combined = (current.attachedMediaList + newItems).distinctBy { it.uri }.take(10)
+            val combined = (current.attachedMediaList + newItems)
+                .distinctBy { it.uri }
+                .take(com.example.data.local.FileAttachmentProcessor.MAX_FILES_PER_MESSAGE)
             current.copy(
                 attachedMediaList = combined,
-                attachedImageUri = combined.firstOrNull()?.uri
+                attachedImageUri = combined.firstOrNull()?.uri,
+                hasSeenFileAttachmentNotice = true,
+                showFirstTimeFileNoticeForProvider = if (shouldShowNotice) activeProvName else current.showFirstTimeFileNoticeForProvider
             )
         }
     }
@@ -3037,6 +3087,10 @@ class OmniStudioViewModel(
     }
 
     fun sendMessage() {
+        voiceManager.stopSpeaking()
+        if (voiceManager.isListening.value) {
+            voiceManager.stopListening()
+        }
         val currentDraft = _uiState.value.draftMessage.trim()
         val mediaList = _uiState.value.attachedMediaList
         val legacyAttachment = _uiState.value.attachedImageUri
@@ -3148,6 +3202,60 @@ class OmniStudioViewModel(
                 selectConversation(convId)
             }
 
+            // Check monthly provider spending limit before sending
+            val activeProv = providers.value.firstOrNull { it.id == conv.providerInstanceId }
+                ?: dao.getProviderById(conv.providerInstanceId)
+            if (activeProv != null) {
+                val stateSnap = _uiState.value
+                val limitUsd = stateSnap.providerMonthlyLimitsUsd[activeProv.id]
+                val monthlySpend = com.example.data.provider.ProviderSpendingLimitEvaluator.calculateMonthlySpendUsd(
+                    usageRecords = usageRecords.value,
+                    providerInstanceId = activeProv.id
+                )
+                val hasActiveOverride = conv.id in stateSnap.spendingLimitActiveOverrideChatIds
+                val hasUsedOverride = conv.id in stateSnap.spendingLimitUsedOverrideChatIds
+                val eval = com.example.data.provider.ProviderSpendingLimitEvaluator.evaluate(
+                    providerInstanceId = activeProv.id,
+                    providerDisplayName = activeProv.displayName,
+                    monthlySpendUsd = monthlySpend,
+                    monthlyLimitUsd = limitUsd,
+                    hasActiveOverrideForChat = hasActiveOverride,
+                    hasUsedOverrideInChat = hasUsedOverride
+                )
+                if (eval.isBlocked) {
+                    val blockMsg = eval.blockedMessage
+                        ?: "Monthly limit reached for ${activeProv.displayName}. Raise the limit in Settings to continue."
+                    _uiState.update {
+                        it.copy(
+                            draftMessage = currentDraft,
+                            attachedMediaList = attachments,
+                            attachedImageUri = attachments.firstOrNull()?.uri,
+                            activeError = NormalizedAiError(
+                                category = ErrorCategory.RATE_LIMIT,
+                                title = "Monthly Spending Limit Reached",
+                                message = blockMsg,
+                                suggestedFix = if (eval.canOverrideOnce) {
+                                    "Raise the limit in Providers/Settings or use the one-time override for this chat."
+                                } else {
+                                    "Raise the limit in Settings to continue."
+                                },
+                                details = eval.progressText,
+                                isRetryable = false
+                            )
+                        )
+                    }
+                    return@launch
+                } else if (hasActiveOverride) {
+                    // Consume the one-time override for this chat
+                    _uiState.update {
+                        it.copy(
+                            spendingLimitActiveOverrideChatIds = it.spendingLimitActiveOverrideChatIds - conv.id,
+                            spendingLimitUsedOverrideChatIds = it.spendingLimitUsedOverrideChatIds + conv.id
+                        )
+                    }
+                }
+            }
+
             if (editingId != null) {
                 val existingMsgs = dao.getMessagesOnce(conv.id)
                 val target = existingMsgs.firstOrNull { it.id == editingId }
@@ -3159,11 +3267,14 @@ class OmniStudioViewModel(
             val currentMessages = dao.getMessagesOnce(conv.id)
             if (currentMessages.isEmpty() && conv.title in listOf("New Chat", "OmniRoute Workspace")) {
                 val autoTitle = currentDraft.lineSequence().firstOrNull()?.take(38)?.trim()
-                    ?.takeIf { it.isNotEmpty() } ?: "Multimodal Chat"
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: attachments.firstOrNull()?.fileName?.take(38)
+                    ?: "Multimodal Chat"
                 conv = conv.copy(title = autoTitle, updatedAt = System.currentTimeMillis())
                 dao.upsertConversation(conv)
             }
 
+            val docAttachmentTokens = com.example.data.local.FileAttachmentProcessor.estimateAttachedFilesTokens(attachments)
             val userMsg = MessageEntity(
                 id = UUID.randomUUID().toString(),
                 conversationId = conv.id,
@@ -3173,7 +3284,7 @@ class OmniStudioViewModel(
                 modelId = if (isCompare) "Compare (${_uiState.value.compareTargets.size} models)" else conv.modelId,
                 attachmentUri = serializedAttachment,
                 attachmentMimeType = primaryMimeType,
-                promptTokens = ModelCapabilityRegistry.estimateTokens(currentDraft),
+                promptTokens = ModelCapabilityRegistry.estimateTokens(currentDraft) + docAttachmentTokens,
                 createdAt = System.currentTimeMillis()
             )
             dao.upsertMessage(userMsg)
@@ -3322,14 +3433,18 @@ class OmniStudioViewModel(
                 val mediaPayloads = if (attachments.isNotEmpty()) {
                     repository.encodeMediaAttachments(attachments)
                 } else emptyList()
-                val legacyDataUri = if (mediaPayloads.isEmpty() && !m.attachmentUri.isNullOrBlank()) {
+                val legacyDataUri = if (mediaPayloads.isEmpty() && !m.attachmentUri.isNullOrBlank() && attachments.none { it.isDocument }) {
                     repository.encodeImageUriToDataUri(m.attachmentUri)
                 } else null
                 val primaryImageDataUri = mediaPayloads.firstOrNull { !it.isVideo }?.dataUri ?: legacyDataUri
+                val effectiveContent = com.example.data.local.FileAttachmentProcessor.buildMessageContentWithFileAttachments(
+                    userText = m.content,
+                    attachments = attachments
+                )
 
                 ChatMessagePayload(
                     role = m.role.lowercase(),
-                    content = m.content,
+                    content = effectiveContent,
                     imageDataUri = primaryImageDataUri,
                     mediaAttachments = mediaPayloads
                 )
@@ -3366,18 +3481,22 @@ class OmniStudioViewModel(
             it.providerInstanceId == provider.id && it.modelId == modelId
         } ?: ModelCapabilityRegistry.buildDescriptor(effectiveProvider.id, modelId)
 
-        // Resolve active SKILL.md instruction packs for this conversation & prompt
+        // Resolve active SKILL.md instruction packs for this conversation & prompt in deterministic order
         val latestUserPrompt = payloadMessages.lastOrNull { it.role.equals("user", ignoreCase = true) }?.content.orEmpty()
         val allSkills = dao.getSkillsOnce()
-        val activeSkills = SkillMarkdownParser.resolveActiveSkillsForTurn(
-            allSkills = allSkills,
-            conversation = conv,
-            userPrompt = latestUserPrompt
+        val activeSkills = com.example.data.provider.PromptCacheManager.sortSkillsDeterministically(
+            SkillMarkdownParser.resolveActiveSkillsForTurn(
+                allSkills = allSkills,
+                conversation = conv,
+                userPrompt = latestUserPrompt
+            )
         )
-        val effectiveSystemPrompt = SkillMarkdownParser.buildSystemPromptWithSkills(
+        val deterministicSkillsBlock = com.example.data.provider.PromptCacheManager.formatDeterministicSkillsBlock(activeSkills)
+        val effectiveSystemPrompt = com.example.data.provider.PromptCacheManager.buildStableSystemPrefix(
             baseSystemPrompt = conv.systemPrompt,
-            activeSkills = activeSkills
+            skillsBlock = deterministicSkillsBlock
         )
+        val providerSupportsCaching = com.example.data.provider.PromptCacheManager.supportsPromptCaching(effectiveProvider)
 
         // Resolve enabled MCP tools + built-in sandboxed run_code tool if function calling is supported and enabled
         val enabledToolTriples: List<Triple<McpServerEntity, McpToolEntity, McpToolDefinition>> =
@@ -3426,8 +3545,63 @@ class OmniStudioViewModel(
             } else {
                 emptyList()
             }
-        val toolDefinitions: List<McpToolDefinition> = enabledToolTriples.map { it.third }
+        val toolDefinitions: List<McpToolDefinition> = com.example.data.provider.PromptCacheManager.sortToolsDeterministically(
+            enabledToolTriples.map { it.third }
+        )
         val toolLookupByName = enabledToolTriples.associateBy { it.third.toolName }
+
+        // Smart Context Trimming: when input reaches ~60% of model's context window (default 32,000 if unknown),
+        // summarise older messages keeping the last 6 turns using the selected model (< 800 tokens).
+        // If summarising fails, send full history and show nothing extra.
+        val isTrimmingEnabled = _uiState.value.contextTrimmingEnabledByChatId[conv.id] ?: true
+        val trimmedHistoryResult = com.example.data.provider.SmartContextTrimmer.trimIfNeeded(
+            fullMessages = payloadMessages,
+            systemPrompt = effectiveSystemPrompt,
+            modelContextWindowTokens = modelDescriptor.contextWindow.takeIf { it > 0 },
+            trimmingEnabledForChat = isTrimmingEnabled,
+            existingCachedSummary = _uiState.value.contextSummaryByChatId[conv.id],
+            summariseOlderMessages = { summaryPrompt ->
+                val summaryBuilder = StringBuilder()
+                var summaryError: NormalizedAiError? = null
+                val summaryRequest = ChatCompletionRequest(
+                    provider = effectiveProvider,
+                    apiKey = apiKey,
+                    modelId = modelId,
+                    messages = listOf(ChatMessagePayload(role = "user", content = summaryPrompt)),
+                    systemPrompt = "Summarise the conversation history concisely in under 600 tokens.",
+                    temperature = 0.2f,
+                    maxTokens = 800,
+                    topP = 1.0f,
+                    supportsTemperature = modelDescriptor.supportsTemperature,
+                    supportsTopP = modelDescriptor.supportsTopP,
+                    supportsSystemPrompt = modelDescriptor.supportsSystemPrompt
+                )
+                repository.streamChat(summaryRequest).collect { ev ->
+                    when (ev) {
+                        is ChatStreamEvent.Delta -> summaryBuilder.append(ev.textChunk)
+                        is ChatStreamEvent.Error -> summaryError = ev.error
+                        else -> Unit
+                    }
+                }
+                if (summaryError != null || summaryBuilder.isBlank()) {
+                    throw IllegalStateException(summaryError?.message ?: "Empty summary")
+                }
+                summaryBuilder.toString()
+            }
+        )
+        if (trimmedHistoryResult.wasSummarised && !trimmedHistoryResult.summaryText.isNullOrBlank()) {
+            _uiState.update { state ->
+                state.copy(
+                    contextSummaryByChatId = state.contextSummaryByChatId + (conv.id to trimmedHistoryResult.summaryText)
+                )
+            }
+        } else if (!trimmedHistoryResult.wasSummarised && !isTrimmingEnabled) {
+            _uiState.update { state ->
+                state.copy(
+                    contextSummaryByChatId = state.contextSummaryByChatId - conv.id
+                )
+            }
+        }
 
         val assistantMsgId = UUID.randomUUID().toString()
         val initialAssistantMsg = MessageEntity(
@@ -3448,7 +3622,7 @@ class OmniStudioViewModel(
             providerName = provider.displayName
         )
 
-        val workingPayloadMessages = payloadMessages.toMutableList()
+        val workingPayloadMessages = trimmedHistoryResult.requestMessages.toMutableList()
         val maxIterationsSetting = conv.maxToolIterations
         val isUnlimited = maxIterationsSetting >= 51
         val maxIterations = if (isUnlimited) Int.MAX_VALUE else maxIterationsSetting.coerceIn(1, 50)
@@ -3458,6 +3632,7 @@ class OmniStudioViewModel(
         val accumulatedText = StringBuilder()
         var reportedPromptTokens = 0
         var reportedCompletionTokens = 0
+        var reportedCachedInputTokens = 0
         var streamError: NormalizedAiError? = null
 
         while (iteration < maxIterations) {
@@ -3476,6 +3651,9 @@ class OmniStudioViewModel(
                 modelId = modelId,
                 messages = workingPayloadMessages.toList(),
                 systemPrompt = effectiveSystemPrompt,
+                baseSystemPrompt = conv.systemPrompt,
+                enabledSkillsBlock = deterministicSkillsBlock,
+                enablePromptCaching = providerSupportsCaching,
                 temperature = conv.temperature,
                 maxTokens = conv.maxTokens,
                 topP = conv.topP,
@@ -3503,6 +3681,7 @@ class OmniStudioViewModel(
                     is ChatStreamEvent.Usage -> {
                         reportedPromptTokens += event.promptTokens
                         reportedCompletionTokens += event.completionTokens
+                        reportedCachedInputTokens += event.cachedInputTokens
                     }
                     is ChatStreamEvent.Error -> {
                         streamError = event.error
@@ -3836,11 +4015,19 @@ class OmniStudioViewModel(
             reportedInputTokens = reportedPromptTokens,
             reportedOutputTokens = reportedCompletionTokens,
             fallbackInputText = promptFallbackText,
-            fallbackOutputText = finalContent
+            fallbackOutputText = finalContent,
+            reportedCachedInputTokens = reportedCachedInputTokens
         )
         val pTokens = turnUsage.inputTokens
         val cTokens = turnUsage.outputTokens
         val costUsd = turnUsage.estimatedCostUsd
+        if (turnUsage.cachedInputTokens > 0) {
+            _uiState.update { state ->
+                state.copy(
+                    cachedTokensByMessageId = state.cachedTokensByMessageId + (assistantMsgId to turnUsage.cachedInputTokens)
+                )
+            }
+        }
         if (turnUsage.isTokenCountEstimated) {
             _uiState.update { state ->
                 state.copy(estimatedTokenMessageIds = state.estimatedTokenMessageIds + assistantMsgId)
@@ -3948,6 +4135,32 @@ class OmniStudioViewModel(
                 messageId = assistantMsgId,
                 isEstimated = turnUsage.isTokenCountEstimated
             )
+
+            // Read replies aloud if enabled in Settings
+            if (_uiState.value.readRepliesAloud && finalContent.isNotBlank() && comparisonGroupId == null) {
+                voiceManager.speakReply(finalContent)
+            }
+
+            // Evaluate cheaper model suggestion after reply if chat has used > 50,000 tokens and model is top-tier
+            if (comparisonGroupId == null && conv.id !in _uiState.value.dismissedCheaperSuggestionChatIds) {
+                val allConvMsgs = dao.getMessagesOnce(conv.id)
+                val totalConvTokens = allConvMsgs.sumOf { (it.promptTokens + it.completionTokens).coerceAtLeast(0) }
+                val availableProviderModelIds = models.value
+                    .filter { it.providerInstanceId == provider.id }
+                    .map { it.modelId }
+                val suggestion = com.example.data.provider.ModelPriceTable.evaluateCheaperModelSuggestion(
+                    currentModelId = modelId,
+                    totalConversationTokens = totalConvTokens,
+                    availableModelIds = availableProviderModelIds
+                )
+                if (suggestion != null) {
+                    _uiState.update { state ->
+                        state.copy(
+                            cheaperModelSuggestionByChatId = state.cheaperModelSuggestionByChatId + (conv.id to suggestion)
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -5171,6 +5384,166 @@ class OmniStudioViewModel(
         val obj = org.json.JSONObject()
         map.forEach { (k, v) -> obj.put(k, v.name) }
         return obj.toString()
+    }
+
+    // --- 7 New Runway Features: Voice, Cheaper Model, Spending Limits, File Attachments, Context Trimming ---
+
+    fun setReadRepliesAloud(enabled: Boolean) {
+        if (!enabled) {
+            voiceManager.stopSpeaking()
+        }
+        viewModelScope.launch {
+            repository.secretVault.setReadRepliesAloud(enabled)
+        }
+        _uiState.update {
+            it.copy(
+                readRepliesAloud = enabled,
+                statusToast = if (enabled) "Read replies aloud enabled" else "Read replies aloud turned off"
+            )
+        }
+    }
+
+    fun toggleVoiceInput() {
+        voiceManager.stopSpeaking()
+        if (voiceManager.isListening.value) {
+            voiceManager.stopListening()
+            return
+        }
+        val baseDraft = _uiState.value.draftMessage.trim()
+        voiceManager.startListening(
+            onPartialOrFinalText = { spokenText, _ ->
+                val combined = if (baseDraft.isEmpty()) spokenText else "$baseDraft $spokenText"
+                _uiState.update { it.copy(draftMessage = combined) }
+            },
+            onError = { errMsg ->
+                _uiState.update { it.copy(statusToast = errMsg) }
+            }
+        )
+    }
+
+    fun stopVoiceSpeaking() {
+        voiceManager.stopSpeaking()
+    }
+
+    fun acceptCheaperModelSuggestion(conversationId: String, suggestedModelId: String) {
+        val conv = conversations.value.firstOrNull { it.id == conversationId } ?: return
+        switchActiveConversationModel(conv.providerInstanceId, suggestedModelId)
+        _uiState.update { state ->
+            state.copy(
+                cheaperModelSuggestionByChatId = state.cheaperModelSuggestionByChatId - conversationId,
+                dismissedCheaperSuggestionChatIds = state.dismissedCheaperSuggestionChatIds + conversationId
+            )
+        }
+    }
+
+    fun dismissCheaperModelSuggestion(conversationId: String) {
+        _uiState.update { state ->
+            state.copy(
+                cheaperModelSuggestionByChatId = state.cheaperModelSuggestionByChatId - conversationId,
+                dismissedCheaperSuggestionChatIds = state.dismissedCheaperSuggestionChatIds + conversationId
+            )
+        }
+    }
+
+    fun setProviderMonthlyLimitUsd(providerId: String, limitUsd: Double?) {
+        val sanitized = limitUsd?.takeIf { it > 0.0 }
+        val updated = if (sanitized != null) {
+            _uiState.value.providerMonthlyLimitsUsd + (providerId to sanitized)
+        } else {
+            _uiState.value.providerMonthlyLimitsUsd - providerId
+        }
+        val json = com.example.data.provider.ProviderSpendingLimitEvaluator.serializeLimitsJson(updated)
+        viewModelScope.launch {
+            repository.secretVault.setProviderSpendingLimitsJson(json)
+        }
+        _uiState.update {
+            it.copy(
+                providerMonthlyLimitsUsd = updated,
+                statusToast = if (sanitized != null) {
+                    String.format(java.util.Locale.US, "Monthly limit set to $%.2f", sanitized)
+                } else {
+                    "Monthly spending limit removed"
+                }
+            )
+        }
+    }
+
+    fun overrideSpendingLimitOnceForActiveChat() {
+        val convId = _uiState.value.activeConversationId ?: return
+        if (convId in _uiState.value.spendingLimitUsedOverrideChatIds) {
+            _uiState.update { it.copy(statusToast = "One-time override already used for this chat.") }
+            return
+        }
+        _uiState.update { state ->
+            state.copy(
+                spendingLimitActiveOverrideChatIds = state.spendingLimitActiveOverrideChatIds + convId,
+                activeError = null,
+                statusToast = "Spending limit overridden for the next message in this chat"
+            )
+        }
+    }
+
+    fun attachDocumentUris(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            for (uri in uris) {
+                val currentList = _uiState.value.attachedMediaList
+                if (!com.example.data.local.FileAttachmentProcessor.isFileCountWithinLimit(currentList.size, 1)) {
+                    _uiState.update {
+                        it.copy(statusToast = "You can attach up to 5 files per message.")
+                    }
+                    break
+                }
+                val result = com.example.data.local.FileAttachmentProcessor.readDocumentAttachmentFromUri(
+                    context = repository.appContext,
+                    uri = uri,
+                    existingCount = currentList.size
+                )
+                result.fold(
+                    onSuccess = { attachment ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            addMediaAttachments(listOf(attachment))
+                        }
+                    },
+                    onFailure = { err ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            _uiState.update {
+                                it.copy(statusToast = err.message ?: "Could not attach file")
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    fun applyAttachmentPresetPrompt(preset: com.example.data.local.FileAttachmentProcessor.AttachmentPreset) {
+        _uiState.update { state ->
+            val current = state.draftMessage.trim()
+            val updated = if (current.isEmpty()) preset.prompt else "$current\n${preset.prompt}"
+            state.copy(draftMessage = updated)
+        }
+    }
+
+    fun dismissFirstTimeFileNotice() {
+        _uiState.update { it.copy(showFirstTimeFileNoticeForProvider = null) }
+    }
+
+    fun setContextTrimmingEnabledForChat(conversationId: String, enabled: Boolean) {
+        _uiState.update { state ->
+            val updatedMap = state.contextTrimmingEnabledByChatId + (conversationId to enabled)
+            val updatedSummaries = if (!enabled) state.contextSummaryByChatId - conversationId else state.contextSummaryByChatId
+            state.copy(
+                contextTrimmingEnabledByChatId = updatedMap,
+                contextSummaryByChatId = updatedSummaries,
+                statusToast = if (enabled) "Smart context trimming enabled for this chat" else "Smart context trimming turned off for this chat"
+            )
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        voiceManager.shutdown()
     }
 
     class Factory(

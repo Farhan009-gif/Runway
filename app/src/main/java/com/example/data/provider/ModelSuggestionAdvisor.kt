@@ -1,12 +1,5 @@
 package com.example.data.provider
 
-data class CheaperModelSuggestion(
-    val currentModelId: String,
-    val suggestedModelId: String,
-    val suggestedModelDisplayName: String,
-    val savingsPercent: Int
-)
-
 /**
  * Evaluates whether a conversation has crossed token thresholds on a top-tier model
  * and suggests a cheaper, highly-capable alternative without ever switching automatically.
@@ -74,8 +67,9 @@ object ModelSuggestionAdvisor {
         return CheaperModelSuggestion(
             currentModelId = currentModelId,
             suggestedModelId = targetModelId,
-            suggestedModelDisplayName = targetModelDisplayName,
-            savingsPercent = savingsPercent
+            suggestedDisplayName = targetModelDisplayName,
+            savingsPercent = savingsPercent,
+            suggestedModelDisplayName = targetModelDisplayName
         )
     }
 }

@@ -82,6 +82,7 @@ class OmniRepository(
     private val dao: OmniDao,
     val secretVault: TinkSecretVault
 ) {
+    val appContext: Context get() = context.applicationContext
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .addInterceptor(
@@ -1776,6 +1777,7 @@ class OmniRepository(
     }
 
     suspend fun encodeMediaAttachment(attachment: com.example.data.local.ChatMediaAttachment): com.example.data.provider.MediaAttachmentPayload? = withContext(Dispatchers.IO) {
+        if (attachment.isDocument) return@withContext null
         runCatching {
             val uri = Uri.parse(attachment.uri)
             if (attachment.isVideo) {

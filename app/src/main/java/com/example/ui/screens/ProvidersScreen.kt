@@ -39,6 +39,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -55,11 +57,15 @@ import com.example.ui.components.MinimalCard
 import com.example.ui.components.MinimalChip
 import com.example.ui.components.MinimalStatusDot
 import com.example.ui.components.MinimalToggle
+import com.example.data.local.UsageRecordEntity
+import com.example.data.provider.ProviderSpendingLimitEvaluator
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.SoftIndigo
 import com.example.ui.viewmodel.ProvidersUiState
 import com.example.ui.viewmodel.ProvidersViewModel
+import androidx.compose.material3.LinearProgressIndicator
+import java.util.Locale
 
 /**
  * Minimal Keys screen: a clean list of providers, masked keys, an edit icon, a "Test" button,
@@ -69,11 +75,15 @@ import com.example.ui.viewmodel.ProvidersViewModel
 fun ProvidersScreen(
     uiState: ProvidersUiState,
     viewModel: ProvidersViewModel,
+    usageRecords: List<UsageRecordEntity> = emptyList(),
+    providerMonthlyLimitsUsd: Map<String, Double> = emptyMap(),
+    onSetProviderMonthlyLimitUsd: (providerId: String, limitUsd: Double?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var showComboDialog by rememberSaveable { mutableStateOf(false) }
     var editingCombo by remember { mutableStateOf<OmniRouteComboDefinition?>(null) }
     var showAddCustomModelDialog by rememberSaveable { mutableStateOf(false) }
+    var editingLimitProvider by remember { mutableStateOf<ProviderInstanceEntity?>(null) }
 
     val filteredProviders = remember(uiState.providers, uiState.selectedFilter, uiState.searchQuery) {
         uiState.providers.filter { prov ->
@@ -179,6 +189,85 @@ fun ProvidersScreen(
         )
     }
 
+    editingLimitProvider?.let { targetProv ->
+        val dialogFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val dialogKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        val dismissLimitDialog: () -> Unit = {
+            dialogFocusManager.clearFocus(force = true)
+            dialogKeyboard?.hide()
+            editingLimitProvider = null
+        }
+        val existingLimit = providerMonthlyLimitsUsd[targetProv.id]
+        var limitText by rememberSaveable(targetProv.id) {
+            mutableStateOf(
+                if (existingLimit != null && existingLimit > 0.0) {
+                    String.format(Locale.US, "%.2f", existingLimit)
+                } else ""
+            )
+        }
+        AlertDialog(
+            onDismissRequest = dismissLimitDialog,
+            title = {
+                Text(
+                    text = "Monthly Spending Limit · ${targetProv.displayName}",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Set an optional monthly USD limit for ${targetProv.displayName}. At 80% a warning appears in chat; at 100% requests are blocked.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = limitText,
+                        onValueChange = { limitText = it },
+                        label = { Text("Monthly limit (USD)") },
+                        placeholder = { Text("5.00") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("provider_monthly_limit_input_${targetProv.id}")
+                    )
+                }
+            },
+            confirmButton = {
+                MinimalButton(
+                    text = "Save",
+                    onClick = {
+                        val parsed = limitText.trim().removePrefix("$").toDoubleOrNull()
+                        dialogFocusManager.clearFocus(force = true)
+                        dialogKeyboard?.hide()
+                        onSetProviderMonthlyLimitUsd(targetProv.id, parsed)
+                        editingLimitProvider = null
+                    },
+                    testTag = "save_provider_monthly_limit_button"
+                )
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (existingLimit != null) {
+                        TextButton(
+                            onClick = {
+                                dialogFocusManager.clearFocus(force = true)
+                                dialogKeyboard?.hide()
+                                onSetProviderMonthlyLimitUsd(targetProv.id, null)
+                                editingLimitProvider = null
+                            }
+                        ) {
+                            Text("Remove limit", color = CoralError)
+                        }
+                    }
+                    TextButton(onClick = dismissLimitDialog) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
+    }
+
     val omniVideoModelsCount = remember(uiState.models) {
         uiState.models.count {
             it.providerInstanceId.contains("omniroute", ignoreCase = true) &&
@@ -253,16 +342,26 @@ fun ProvidersScreen(
             val maskedKey = uiState.maskedKeysByProvider[provider.id]
             val health = uiState.providerHealthById[provider.id] ?: ProviderHealth.Unknown
             val isBusyTesting = uiState.busyTestingProviderId == provider.id
+            val monthlySpendUsd = remember(usageRecords, provider.id) {
+                ProviderSpendingLimitEvaluator.calculateMonthlySpendUsd(
+                    usageRecords = usageRecords,
+                    providerInstanceId = provider.id
+                )
+            }
+            val monthlyLimitUsd = providerMonthlyLimitsUsd[provider.id]
 
             ProviderCardItem(
                 provider = provider,
                 maskedKey = maskedKey,
                 health = health,
                 isBusyTesting = isBusyTesting,
+                monthlySpendUsd = monthlySpendUsd,
+                monthlyLimitUsd = monthlyLimitUsd,
                 onToggleEnabled = { viewModel.toggleProviderEnabled(provider) },
                 onEditFull = { viewModel.openEditProviderDialog(provider) },
                 onQuickEditKey = { viewModel.openQuickEditKeyDialog(provider) },
-                onTestConnection = { viewModel.testConnection(provider) }
+                onTestConnection = { viewModel.testConnection(provider) },
+                onEditMonthlyLimit = { editingLimitProvider = provider }
             )
         }
     }
@@ -274,10 +373,13 @@ private fun ProviderCardItem(
     maskedKey: String?,
     health: ProviderHealth,
     isBusyTesting: Boolean,
+    monthlySpendUsd: Double = 0.0,
+    monthlyLimitUsd: Double? = null,
     onToggleEnabled: () -> Unit,
     onEditFull: () -> Unit,
     onQuickEditKey: () -> Unit,
-    onTestConnection: () -> Unit
+    onTestConnection: () -> Unit,
+    onEditMonthlyLimit: () -> Unit = {}
 ) {
     val hasKey = !maskedKey.isNullOrBlank()
     val safeMaskedDisplay = remember(maskedKey) {
@@ -294,98 +396,152 @@ private fun ProviderCardItem(
             .fillMaxWidth()
             .testTag("provider_card_${provider.id}")
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Left: Status dot + Provider Name + Masked Key
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable(onClick = onEditFull)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                MinimalStatusDot(isConnected = provider.isEnabled && (hasKey || provider.presetEnum() == ProviderPresetType.OMNIROUTE))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = provider.displayName,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                // Left: Status dot + Provider Name + Masked Key
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(onClick = onEditFull)
+                ) {
+                    MinimalStatusDot(isConnected = provider.isEnabled && (hasKey || provider.presetEnum() == ProviderPresetType.OMNIROUTE))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (hasKey) safeMaskedDisplay else "No key set",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (hasKey) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            text = provider.displayName,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        when (health) {
-                            is ProviderHealth.Healthy -> {
-                                Text(
-                                    text = "· ${health.latencyMs}ms",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = SoftIndigo
-                                )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (hasKey) safeMaskedDisplay else "No key set",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (hasKey) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                            when (health) {
+                                is ProviderHealth.Healthy -> {
+                                    Text(
+                                        text = "· ${health.latencyMs}ms",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = SoftIndigo
+                                    )
+                                }
+                                is ProviderHealth.Unhealthy -> {
+                                    Text(
+                                        text = "· Failed",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = CoralError
+                                    )
+                                }
+                                else -> Unit
                             }
-                            is ProviderHealth.Unhealthy -> {
-                                Text(
-                                    text = "· Failed",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CoralError
-                                )
-                            }
-                            else -> Unit
+                        }
+                    }
+                }
+
+                // Right: Edit icon + "Test" button
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    IconButton(
+                        onClick = onQuickEditKey,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("edit_key_button_${provider.id}")
+                    ) {
+                        Icon(
+                            imageVector = LucideIcons.Edit,
+                            contentDescription = "Edit Key",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    Surface(
+                        onClick = onTestConnection,
+                        enabled = !isBusyTesting,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.background,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .testTag("test_ping_button_${provider.id}")
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (isBusyTesting) "..." else "Test",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
                 }
             }
 
-            // Right: Edit icon + "Test" button
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            // Monthly spending limit row & progress bar ("$3.20 of $5.00 this month")
+            val progressText = remember(monthlySpendUsd, monthlyLimitUsd) {
+                ProviderSpendingLimitEvaluator.formatMonthlyProgressText(monthlySpendUsd, monthlyLimitUsd)
+            }
+            val progressFraction = remember(monthlySpendUsd, monthlyLimitUsd) {
+                if (monthlyLimitUsd != null && monthlyLimitUsd > 0.0) {
+                    (monthlySpendUsd / monthlyLimitUsd).toFloat().coerceIn(0f, 1f)
+                } else 0f
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onEditMonthlyLimit)
+                    .testTag("provider_spending_limit_section_${provider.id}"),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                IconButton(
-                    onClick = onQuickEditKey,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("edit_key_button_${provider.id}")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = LucideIcons.Edit,
-                        contentDescription = "Edit Key",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
+                    Text(
+                        text = progressText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (monthlyLimitUsd != null && monthlyLimitUsd > 0.0) "Edit limit" else "Set limit",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = SoftIndigo,
+                        modifier = Modifier.testTag("provider_set_limit_button_${provider.id}")
                     )
                 }
-
-                Surface(
-                    onClick = onTestConnection,
-                    enabled = !isBusyTesting,
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.background,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier
-                        .height(36.dp)
-                        .testTag("test_ping_button_${provider.id}")
-                ) {
-                    Box(
-                        modifier = Modifier.padding(horizontal = 14.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (isBusyTesting) "..." else "Test",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                if (monthlyLimitUsd != null && monthlyLimitUsd > 0.0) {
+                    val barColor = when {
+                        progressFraction >= 1.0f -> CoralError
+                        progressFraction >= 0.8f -> SoftIndigo
+                        else -> EmeraldSuccess
                     }
+                    LinearProgressIndicator(
+                        progress = { progressFraction },
+                        color = barColor,
+                        trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .testTag("provider_spending_progress_${provider.id}")
+                    )
                 }
             }
         }
@@ -401,9 +557,16 @@ private fun QuickEditApiKeyDialog(
     onClear: () -> Unit
 ) {
     var rawKey by rememberSaveable { mutableStateOf("") }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val safeDismiss: () -> Unit = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        onDismiss()
+    }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = safeDismiss,
         title = {
             Text(
                 text = provider.displayName,
@@ -440,7 +603,11 @@ private fun QuickEditApiKeyDialog(
         confirmButton = {
             MinimalButton(
                 text = "Save",
-                onClick = { onSave(rawKey) },
+                onClick = {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                    onSave(rawKey)
+                },
                 enabled = rawKey.isNotBlank(),
                 filled = true,
                 testTag = "confirm_save_quick_key_button"
@@ -450,13 +617,17 @@ private fun QuickEditApiKeyDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!currentMaskedKey.isNullOrBlank()) {
                     TextButton(
-                        onClick = onClear,
+                        onClick = {
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                            onClear()
+                        },
                         modifier = Modifier.testTag("clear_key_button_${provider.id}")
                     ) {
                         Text("Clear", color = CoralError)
                     }
                 }
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = safeDismiss) {
                     Text("Cancel")
                 }
             }
@@ -500,8 +671,15 @@ private fun AddEditProviderDialog(
         mutableStateOf(initialProvider?.defaultChatModelId ?: "gpt-4o")
     }
 
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+            onDismiss()
+        },
         title = {
             Text(
                 text = if (initialProvider != null) initialProvider.displayName else "Add Provider",
@@ -597,6 +775,8 @@ private fun AddEditProviderDialog(
             MinimalButton(
                 text = "Save",
                 onClick = {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
                     onSave(
                         initialProvider?.id,
                         selectedPreset,
@@ -615,7 +795,11 @@ private fun AddEditProviderDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = {
+                focusManager.clearFocus(force = true)
+                keyboardController?.hide()
+                onDismiss()
+            }) {
                 Text("Cancel")
             }
         }

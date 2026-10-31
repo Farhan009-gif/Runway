@@ -122,14 +122,19 @@ class AnthropicProvider(
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatStreamEvent> = flow {
         val cleanBase = request.provider.baseUrl.trim().trimEnd('/')
         val messagesUrl = "$cleanBase/messages"
+        val supportsCaching = request.enablePromptCaching ||
+            PromptCacheManager.supportsAnthropicPromptCaching(request.provider, request.modelId)
 
-        val payloadJson = buildAnthropicPayloadJson(request)
+        val payloadJson = buildAnthropicPayloadJson(request.copy(enablePromptCaching = supportsCaching))
         val reqBuilder = Request.Builder()
             .url(messagesUrl)
             .post(payloadJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Accept", "text/event-stream, application/json")
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", "prompt-caching-2024-07-25")
+
+        if (supportsCaching) {
+            reqBuilder.header("anthropic-beta", "prompt-caching-2024-07-31")
+        }
 
         if (request.apiKey.isNotBlank()) {
             reqBuilder.header("x-api-key", request.apiKey.trim())
@@ -158,7 +163,7 @@ class AnthropicProvider(
 
                 var inputTokens = 0
                 var outputTokens = 0
-                var cachedTokens = 0
+                var cachedInputTokens = 0
                 var activeToolId: String? = null
                 var activeToolName: String? = null
                 val activeToolJsonBuilder = StringBuilder()
@@ -197,8 +202,14 @@ class AnthropicProvider(
                         "message_start" -> {
                             val usage = eventJson.optJSONObject("message")?.optJSONObject("usage")
                             if (usage != null) {
-                                inputTokens = usage.optInt("input_tokens", inputTokens)
-                                cachedTokens = usage.optInt("cache_read_input_tokens", cachedTokens)
+                                val parsed = ModelPriceTable.parseAnthropicUsage(eventJson)
+                                if (parsed != null) {
+                                    inputTokens = parsed.inputTokens
+                                    cachedInputTokens = parsed.cachedInputTokens
+                                } else {
+                                    inputTokens = usage.optInt("input_tokens", inputTokens)
+                                    cachedInputTokens = usage.optInt("cache_read_input_tokens", cachedInputTokens)
+                                }
                             }
                         }
                         "content_block_start" -> {
@@ -237,9 +248,11 @@ class AnthropicProvider(
                             val usage = eventJson.optJSONObject("usage")
                             if (usage != null) {
                                 outputTokens = usage.optInt("output_tokens", outputTokens)
-                                val readCached = usage.optInt("cache_read_input_tokens", 0)
-                                if (readCached > 0) cachedTokens = readCached
-                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens, cachedTokens))
+                                val deltaCached = usage.optInt("cache_read_input_tokens", 0)
+                                if (deltaCached > 0) {
+                                    cachedInputTokens = deltaCached
+                                }
+                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens, cachedInputTokens))
                             }
                         }
                         "error" -> {
@@ -257,8 +270,8 @@ class AnthropicProvider(
                         }
                         "message_stop" -> {
                             flushActiveAnthropicTool()
-                            if (inputTokens > 0 || outputTokens > 0) {
-                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens))
+                            if (inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0) {
+                                emit(ChatStreamEvent.Usage(inputTokens, outputTokens, cachedInputTokens))
                             }
                             emit(ChatStreamEvent.Done)
                             return@flow
@@ -294,18 +307,14 @@ class AnthropicProvider(
         if (request.supportsTopP) {
             root.put("top_p", request.topP.toDouble().coerceIn(0.05, 1.0))
         }
-        if (request.supportsSystemPrompt && request.systemPrompt.isNotBlank()) {
-            if (request.tools.isNotEmpty()) {
-                val systemArr = JSONArray().apply {
-                    put(
-                        JSONObject().apply {
-                            put("type", "text")
-                            put("text", request.systemPrompt.trim())
-                            put("cache_control", JSONObject().put("type", "ephemeral"))
-                        }
-                    )
-                }
-                root.put("system", systemArr)
+        val effectiveBasePrompt = request.baseSystemPrompt.ifBlank { request.systemPrompt }
+        if (request.supportsSystemPrompt && (effectiveBasePrompt.isNotBlank() || request.enabledSkillsBlock.isNotBlank())) {
+            if (request.enablePromptCaching || request.enabledSkillsBlock.isNotBlank()) {
+                val cachedBlocks = PromptCacheManager.buildAnthropicCachedSystemBlocks(
+                    baseSystemPrompt = effectiveBasePrompt,
+                    enabledSkillsBlock = request.enabledSkillsBlock
+                )
+                root.put("system", cachedBlocks)
             } else {
                 root.put("system", request.systemPrompt.trim())
             }
@@ -417,8 +426,10 @@ class AnthropicProvider(
         root.put("messages", messagesArr)
 
         if (request.tools.isNotEmpty()) {
+            val sortedTools = PromptCacheManager.sortToolsDeterministically(request.tools)
+            val markToolsCacheable = request.enablePromptCaching ||
+                PromptCacheManager.supportsAnthropicPromptCaching(request.provider, request.modelId)
             val toolsArr = JSONArray()
-            val sortedTools = request.tools.sortedBy { it.toolName }
             for ((index, tool) in sortedTools.withIndex()) {
                 val inputSchema = runCatching { JSONObject(tool.inputSchemaJson) }.getOrElse {
                     JSONObject().apply {
@@ -431,7 +442,7 @@ class AnthropicProvider(
                         put("name", tool.toolName)
                         put("description", tool.description)
                         put("input_schema", inputSchema)
-                        if (index == sortedTools.lastIndex) {
+                        if (markToolsCacheable && index == sortedTools.lastIndex) {
                             put("cache_control", JSONObject().put("type", "ephemeral"))
                         }
                     }

@@ -939,9 +939,16 @@ fun MinimalSheet(
     subtitle: String? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val safeDismiss: () -> Unit = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        onDismiss()
+    }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = safeDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,

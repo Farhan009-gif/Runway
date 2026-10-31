@@ -502,12 +502,21 @@ object ProviderErrorMapper {
                 lower.contains("invalid_api_key") || lower.contains("incorrect api key") ||
                 lower.contains("unauthorized") -> {
                 ProviderError.Auth(
-                    message = "$providerName rejected credentials (HTTP $statusCode). Check your API key in Keys.",
+                    message = cleanMsg.ifBlank { "HTTP $statusCode" },
                     httpStatus = statusCode,
                     providerName = providerName
                 )
             }
-            statusCode == 405 || statusCode == 404 -> {
+            statusCode == 404 -> {
+                ProviderError.Route(
+                    message = cleanMsg.ifBlank { "HTTP 404 on $attemptedMethod $redactedUrl" },
+                    httpStatus = 404,
+                    attemptedMethod = attemptedMethod,
+                    attemptedUrl = redactedUrl,
+                    correctedUrlHint = "Pick another model."
+                )
+            }
+            statusCode == 405 -> {
                 val hint = if (!redactedUrl.contains("/v1/")) {
                     "Ensure Base URL ends with /v1 (e.g. http://<host>:20128/v1) so POST hits /v1/chat/completions instead of the web root."
                 } else {
@@ -527,11 +536,18 @@ object ProviderErrorMapper {
                     httpStatus = statusCode
                 )
             }
+            statusCode == 413 || ErrorNormalizer.hasTpmOrRpmIndicator(redactedBody) -> {
+                val retryMs = parseRetryAfterMs(headers, redactedBody)
+                ProviderError.RateLimited(
+                    message = cleanMsg.ifBlank { "Rate-limited ($statusCode)" },
+                    retryAfterMs = retryMs,
+                    httpStatus = statusCode
+                )
+            }
             statusCode == 429 || lower.contains("rate_limit") || lower.contains("too many requests") -> {
                 val retryMs = parseRetryAfterMs(headers, redactedBody)
                 ProviderError.RateLimited(
-                    message = "$providerName rate limit reached (HTTP 429)." +
-                        (if (retryMs != null) " Retry after ${retryMs / 1000}s." else ""),
+                    message = cleanMsg.ifBlank { "$providerName rate limit reached (HTTP 429)." },
                     retryAfterMs = retryMs,
                     httpStatus = 429
                 )
@@ -588,33 +604,38 @@ object ProviderErrorMapper {
         norm: NormalizedAiError,
         baseUrl: String = ""
     ): ProviderError {
-        val lower = (norm.title + " " + norm.message + " " + norm.suggestedFix).lowercase()
+        val lower = (norm.title + " " + norm.message + " " + norm.suggestedFix + " " + norm.details).lowercase()
         val inferredStatus = when {
+            lower.contains("500") -> 500
             lower.contains("502") -> 502
             lower.contains("503") -> 503
             lower.contains("504") -> 504
+            lower.contains("413") -> 413
+            lower.contains("404") -> 404
+            lower.contains("403") -> 403
+            lower.contains("401") -> 401
             else -> null
         }
         return when {
             norm.category == ErrorCategory.INVALID_KEY || lower.contains("401") || lower.contains("403") ->
-                ProviderError.Auth(message = norm.message, httpStatus = 401)
+                ProviderError.Auth(message = norm.details.ifBlank { norm.message }, httpStatus = inferredStatus ?: 401)
             lower.contains("405") || lower.contains("404") || lower.contains("method not allowed") ||
                 lower.contains("playwright") || lower.contains("cloudflare playground") ->
                 ProviderError.Route(
-                    message = norm.message,
+                    message = norm.details.ifBlank { norm.message },
                     httpStatus = inferredStatus ?: if (lower.contains("404")) 404 else 405,
                     attemptedUrl = SecretRedactor.redactUrl(baseUrl),
                     correctedUrlHint = norm.suggestedFix
                 )
-            norm.category == ErrorCategory.RATE_LIMIT || lower.contains("429") ->
-                ProviderError.RateLimited(message = norm.message, httpStatus = 429)
+            norm.category == ErrorCategory.RATE_LIMIT || lower.contains("429") || lower.contains("413") ->
+                ProviderError.RateLimited(message = norm.details.ifBlank { norm.message }, httpStatus = inferredStatus ?: 429)
             norm.category == ErrorCategory.QUOTA_EXCEEDED || lower.contains("402") ->
-                ProviderError.QuotaExceeded(message = norm.message, httpStatus = 402)
+                ProviderError.QuotaExceeded(message = norm.details.ifBlank { norm.message }, httpStatus = 402)
             norm.category == ErrorCategory.CLEARTEXT_UNAPPROVED ->
-                ProviderError.CleartextBlocked(host = norm.unapprovedHost.orEmpty(), message = norm.message)
-            norm.category == ErrorCategory.NETWORK_UNREACHABLE || inferredStatus in listOf(502, 503, 504) ->
-                ProviderError.Transient(message = norm.message, httpStatus = inferredStatus)
-            else -> ProviderError.Unknown(message = norm.message, httpStatus = inferredStatus)
+                ProviderError.CleartextBlocked(host = norm.unapprovedHost.orEmpty(), message = norm.details.ifBlank { norm.message })
+            norm.category == ErrorCategory.NETWORK_UNREACHABLE || inferredStatus in listOf(500, 502, 503, 504) ->
+                ProviderError.Transient(message = norm.details.ifBlank { norm.message }, httpStatus = inferredStatus)
+            else -> ProviderError.Unknown(message = norm.details.ifBlank { norm.message }, httpStatus = inferredStatus)
         }
     }
 
@@ -623,75 +644,129 @@ object ProviderErrorMapper {
         providerName: String,
         baseUrl: String = ""
     ): NormalizedAiError {
+        val redactedUrl = SecretRedactor.redactUrl(baseUrl)
+        val detailsLine = buildString {
+            error.httpStatus?.let { append("HTTP $it • ") }
+            append(providerName)
+            if (redactedUrl.isNotBlank()) append(" • $redactedUrl")
+            if (error.message.isNotBlank()) append(" • ${SecretRedactor.redactText(error.message).take(240)}")
+        }
         return when (error) {
             is ProviderError.Auth -> NormalizedAiError(
                 category = ErrorCategory.INVALID_KEY,
-                title = "Authentication Rejected (${error.httpStatus ?: 401})",
-                message = error.message,
-                suggestedFix = "Open Keys -> verify your API key for $providerName -> tap Test Connection."
+                title = "Authentication Failed (${error.httpStatus ?: 401})",
+                message = "Your API key was rejected.",
+                suggestedFix = "Check the key in Providers.",
+                details = detailsLine
             )
-            is ProviderError.Route -> NormalizedAiError(
-                category = ErrorCategory.SERVER_ERROR,
-                title = "Route / Model Error (HTTP ${error.httpStatus ?: 405})",
-                message = error.message,
-                suggestedFix = error.correctedUrlHint.ifBlank {
-                    "Ensure Base URL ends with /v1 (e.g. http://192.168.1.x:20128/v1) and uses the correct scheme."
-                }
-            )
-            is ProviderError.RateLimited -> NormalizedAiError(
-                category = ErrorCategory.RATE_LIMIT,
-                title = "Rate Limited (HTTP 429)",
-                message = error.message,
-                suggestedFix = if (error.retryAfterMs != null) {
-                    "Automatic backoff waited ${error.retryAfterMs / 1000}s. Try again shortly or switch providers."
-                } else {
-                    "Wait a moment and retry, or switch to another provider/model in the top selector."
-                }
-            )
-            is ProviderError.Transient -> {
-                val isUpstreamModelIssue = EndpointUrlNormalizer.isOmniRouteUpstreamModelError(error.message) ||
-                    error.httpStatus in listOf(502, 503)
-                if (isUpstreamModelIssue) {
+            is ProviderError.Route -> {
+                if (error.httpStatus == 404 && !EndpointUrlNormalizer.isOmniRouteUpstreamModelError(error.message)) {
                     NormalizedAiError(
                         category = ErrorCategory.SERVER_ERROR,
-                        title = "Upstream Model Failed (HTTP ${error.httpStatus ?: 502})",
-                        message = error.message,
-                        suggestedFix = "Your OmniRoute server is online, but this specific model's upstream provider closed the stream or is not configured in OmniRoute. Tap 'Switch to Working Model' below or choose a provider you configured in OmniRoute (e.g. Gemini, Groq, DeepSeek, OpenAI)."
+                        title = "Model Not Available (404)",
+                        message = "This model isn't available on this provider.",
+                        suggestedFix = "Pick another model.",
+                        details = detailsLine
                     )
                 } else {
-                    val isLocalhost = baseUrl.contains("localhost") || baseUrl.contains("127.0.0.1")
-                    val fixHint = if (isLocalhost) {
-                        "On a physical Android phone, 'localhost' is the phone itself. Use your computer's LAN IP (http://192.168.x.x:20128/v1) or Tailscale IP."
-                    } else {
-                        "Verify $providerName is online and reachable from your network (${SecretRedactor.redactUrl(baseUrl)})."
-                    }
                     NormalizedAiError(
-                        category = ErrorCategory.NETWORK_UNREACHABLE,
-                        title = "Host Unreachable / Timed Out",
+                        category = ErrorCategory.SERVER_ERROR,
+                        title = "Route / Model Error (HTTP ${error.httpStatus ?: 405})",
                         message = error.message,
-                        suggestedFix = fixHint
+                        suggestedFix = error.correctedUrlHint.ifBlank {
+                            "Ensure Base URL ends with /v1 (e.g. http://192.168.1.x:20128/v1) and uses the correct scheme."
+                        },
+                        details = detailsLine
                     )
+                }
+            }
+            is ProviderError.RateLimited -> {
+                val isTpmRpmOr413 = error.httpStatus == 413 || ErrorNormalizer.hasTpmOrRpmIndicator(error.message)
+                if (isTpmRpmOr413) {
+                    NormalizedAiError(
+                        category = ErrorCategory.RATE_LIMIT,
+                        title = "Rate Limited (${error.httpStatus ?: 413})",
+                        message = "The provider is rate-limited right now.",
+                        suggestedFix = "Wait or switch models.",
+                        details = detailsLine
+                    )
+                } else {
+                    NormalizedAiError(
+                        category = ErrorCategory.RATE_LIMIT,
+                        title = "Too Many Requests (429)",
+                        message = "Too many requests.",
+                        suggestedFix = "Wait or switch providers.",
+                        details = detailsLine
+                    )
+                }
+            }
+            is ProviderError.Transient -> {
+                val isServer5xx = error.httpStatus in listOf(500, 502, 503, 504)
+                val isOmniPlaywright = EndpointUrlNormalizer.isOmniRouteUpstreamModelError(error.message)
+                when {
+                    isOmniPlaywright -> {
+                        NormalizedAiError(
+                            category = ErrorCategory.SERVER_ERROR,
+                            title = "Upstream Model Failed (HTTP ${error.httpStatus ?: 502})",
+                            message = error.message,
+                            suggestedFix = "Retry or switch providers.",
+                            details = detailsLine
+                        )
+                    }
+                    isServer5xx -> {
+                        NormalizedAiError(
+                            category = ErrorCategory.SERVER_ERROR,
+                            title = "Provider Trouble (${error.httpStatus})",
+                            message = "The provider is having trouble.",
+                            suggestedFix = "Retry or switch providers.",
+                            details = detailsLine
+                        )
+                    }
+                    else -> {
+                        NormalizedAiError(
+                            category = ErrorCategory.NETWORK_UNREACHABLE,
+                            title = "Connection Timed Out",
+                            message = "No connection to the provider.",
+                            suggestedFix = "Check your network or gateway address.",
+                            details = detailsLine
+                        )
+                    }
                 }
             }
             is ProviderError.QuotaExceeded -> NormalizedAiError(
                 category = ErrorCategory.QUOTA_EXCEEDED,
                 title = "Quota or Credits Exhausted",
                 message = error.message,
-                suggestedFix = "Switch to another provider or top up your $providerName billing balance."
+                suggestedFix = "Switch to another provider or top up your $providerName billing balance.",
+                details = detailsLine
             )
             is ProviderError.CleartextBlocked -> NormalizedAiError(
                 category = ErrorCategory.CLEARTEXT_UNAPPROVED,
-                title = "Cleartext HTTP Host Blocked (${error.host})",
-                message = error.message,
-                suggestedFix = "Tap 'Approve Host' to trust ${error.host} on your local LAN/Tailscale network.",
-                unapprovedHost = error.host
+                title = "Cleartext HTTP Blocked",
+                message = "Plain HTTP to this address isn't allowed.",
+                suggestedFix = "Approve the host in Settings.",
+                unapprovedHost = error.host,
+                details = detailsLine
             )
-            is ProviderError.Unknown -> NormalizedAiError(
-                category = ErrorCategory.SERVER_ERROR,
-                title = "$providerName Error${error.httpStatus?.let { " ($it)" }.orEmpty()}",
-                message = error.message,
-                suggestedFix = "Check model compatibility and inspect the Request Diagnostics log in Keys."
-            )
+            is ProviderError.Unknown -> {
+                if (error.httpStatus in listOf(500, 502, 503, 504)) {
+                    NormalizedAiError(
+                        category = ErrorCategory.SERVER_ERROR,
+                        title = "Provider Trouble (${error.httpStatus})",
+                        message = "The provider is having trouble.",
+                        suggestedFix = "Retry or switch providers.",
+                        details = detailsLine
+                    )
+                } else {
+                    NormalizedAiError(
+                        category = ErrorCategory.SERVER_ERROR,
+                        title = "$providerName Error${error.httpStatus?.let { " ($it)" }.orEmpty()}",
+                        message = error.message,
+                        suggestedFix = "Check model compatibility and inspect the Request Diagnostics log in Keys.",
+                        details = detailsLine
+                    )
+                }
+            }
         }
     }
 }

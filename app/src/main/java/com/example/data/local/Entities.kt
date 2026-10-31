@@ -147,7 +147,6 @@ data class ProviderInstanceEntity(
     val defaultImageModelId: String = "",
     val defaultVideoModelId: String = "",
     val lastTestStatus: String = "Untested",
-    val monthlyLimitUsd: Double = 0.0,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun capabilitySet(): Set<CapabilityTag> =
@@ -180,6 +179,9 @@ data class ModelDescriptorEntity(
     val inputCostPer1k: Double = 0.0015,
     val outputCostPer1k: Double = 0.0060
 ) {
+    val contextWindow: Int
+        get() = com.example.data.provider.SmartContextTrimmer.resolveContextWindowTokens(modelId)
+
     fun capabilitySet(): Set<CapabilityTag> =
         capabilitiesCsv.split(",")
             .mapNotNull { raw -> runCatching { CapabilityTag.valueOf(raw.trim()) }.getOrNull() }
@@ -228,7 +230,6 @@ data class MessageEntity(
     val errorText: String? = null,
     val comparisonGroupId: String? = null, // Groups 2-3 side-by-side Compare Mode replies
     val latencyMs: Long = 0L,
-    val cachedTokens: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -237,24 +238,50 @@ data class ChatMediaAttachment(
     val mimeType: String = "image/jpeg",
     val isVideo: Boolean = false,
     val name: String? = null,
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val isDocument: Boolean = false,
+    val extractedText: String? = null,
+    val sizeBytes: Long = 0L
 ) {
+    val fileName: String
+        get() = name ?: ""
+
     fun toSerializedString(): String {
-        val vidFlag = if (isVideo) "v" else "i"
+        val typeFlag = when {
+            isVideo -> "v"
+            isDocument -> "d"
+            else -> "i"
+        }
         val safeName = (name ?: "").replace("|", "_").replace(";", "_")
-        return "$uri;$mimeType;$vidFlag;$safeName;$durationMs"
+        return if (!isDocument && extractedText.isNullOrBlank() && sizeBytes == 0L) {
+            "$uri;$mimeType;$typeFlag;$safeName;$durationMs"
+        } else {
+            val encodedText = java.util.Base64.getEncoder().encodeToString(
+                (extractedText ?: "").toByteArray(Charsets.UTF_8)
+            )
+            "$uri;$mimeType;$typeFlag;$safeName;$durationMs;$sizeBytes;$encodedText"
+        }
     }
 
     companion object {
         fun fromSerializedString(str: String): ChatMediaAttachment {
             val parts = str.split(";")
             return if (parts.size >= 3) {
+                val flag = parts.getOrNull(2).orEmpty()
+                val decodedText = parts.getOrNull(6)?.takeIf { it.isNotBlank() }?.let { b64 ->
+                    runCatching {
+                        String(java.util.Base64.getDecoder().decode(b64), Charsets.UTF_8)
+                    }.getOrNull()
+                }
                 ChatMediaAttachment(
                     uri = parts[0],
                     mimeType = parts.getOrNull(1)?.ifBlank { "image/jpeg" } ?: "image/jpeg",
-                    isVideo = parts.getOrNull(2) == "v",
+                    isVideo = flag == "v",
                     name = parts.getOrNull(3)?.takeIf { it.isNotBlank() },
-                    durationMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L
+                    durationMs = parts.getOrNull(4)?.toLongOrNull() ?: 0L,
+                    isDocument = flag == "d",
+                    extractedText = decodedText,
+                    sizeBytes = parts.getOrNull(5)?.toLongOrNull() ?: 0L
                 )
             } else {
                 val isVid = str.contains("video", ignoreCase = true) ||

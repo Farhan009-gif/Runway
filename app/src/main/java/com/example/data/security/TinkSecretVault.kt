@@ -120,6 +120,9 @@ class TinkSecretVault(private val context: Context) {
         private val KEY_CONNECTOR_DEFAULT_POLICIES_JSON = stringPreferencesKey("runway_connector_default_policies_json")
         private val KEY_CONNECTOR_TOOL_POLICIES_JSON = stringPreferencesKey("runway_connector_tool_policies_json")
         private val KEY_CONFIRMED_WRITE_ALWAYS_TOOLS = stringSetPreferencesKey("runway_confirmed_write_always_tools")
+        private val KEY_READ_REPLIES_ALOUD = booleanPreferencesKey("runway_read_replies_aloud")
+        private val KEY_PROVIDER_SPENDING_LIMITS_JSON = stringPreferencesKey("runway_provider_spending_limits_json")
+        private val KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE = booleanPreferencesKey("runway_has_seen_file_attachment_notice")
 
         private fun apiKeyPreferenceKey(providerInstanceId: String) =
             stringPreferencesKey("$ENC_KEY_PREFIX$providerInstanceId")
@@ -177,6 +180,18 @@ class TinkSecretVault(private val context: Context) {
         prefs[KEY_CONFIRMED_WRITE_ALWAYS_TOOLS] ?: emptySet()
     }
 
+    val readRepliesAloudFlow: Flow<Boolean> = context.omniDataStore.data.map { prefs ->
+        prefs[KEY_READ_REPLIES_ALOUD] ?: false
+    }
+
+    val providerSpendingLimitsJsonFlow: Flow<String> = context.omniDataStore.data.map { prefs ->
+        prefs[KEY_PROVIDER_SPENDING_LIMITS_JSON] ?: "{}"
+    }
+
+    val hasSeenFileAttachmentNoticeFlow: Flow<Boolean> = context.omniDataStore.data.map { prefs ->
+        prefs[KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE] ?: false
+    }
+
     val runwayMigrationVerifiedFlow: Flow<Boolean> = context.omniDataStore.data.map { prefs ->
         prefs[KEY_RUNWAY_MIGRATION_VERIFIED] ?: false
     }
@@ -191,6 +206,24 @@ class TinkSecretVault(private val context: Context) {
 
     val runwayFallbackEnabledFlow: Flow<Boolean> = context.omniDataStore.data.map { prefs ->
         prefs[KEY_RUNWAY_FALLBACK_ENABLED] ?: true
+    }
+
+    suspend fun setReadRepliesAloud(enabled: Boolean) {
+        context.omniDataStore.edit { prefs ->
+            prefs[KEY_READ_REPLIES_ALOUD] = enabled
+        }
+    }
+
+    suspend fun setProviderSpendingLimitsJson(json: String) {
+        context.omniDataStore.edit { prefs ->
+            prefs[KEY_PROVIDER_SPENDING_LIMITS_JSON] = json
+        }
+    }
+
+    suspend fun setHasSeenFileAttachmentNotice(seen: Boolean) {
+        context.omniDataStore.edit { prefs ->
+            prefs[KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE] = seen
+        }
     }
 
     suspend fun getRunwayPrefString(keyName: String, defaultValue: String = ""): String {

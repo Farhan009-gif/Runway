@@ -597,11 +597,11 @@ class OpenAICompatibleProvider(
 
                         val usageObj = chunkJson.optJSONObject("usage")
                         if (usageObj != null) {
-                            val pTokens = usageObj.optInt("prompt_tokens", 0)
-                            val cTokens = usageObj.optInt("completion_tokens", 0)
-                            val promptDetails = usageObj.optJSONObject("prompt_tokens_details")
-                            val cachedTokens = promptDetails?.optInt("cached_tokens", 0) ?: 0
-                            if (pTokens > 0 || cTokens > 0) {
+                            val parsed = ModelPriceTable.parseOpenAiUsage(chunkJson)
+                            val pTokens = parsed?.inputTokens ?: usageObj.optInt("prompt_tokens", 0)
+                            val cTokens = parsed?.outputTokens ?: usageObj.optInt("completion_tokens", 0)
+                            val cachedTokens = parsed?.cachedInputTokens ?: 0
+                            if (pTokens > 0 || cTokens > 0 || cachedTokens > 0) {
                                 emit(ChatStreamEvent.Usage(pTokens, cTokens, cachedTokens))
                             }
                         }
@@ -659,13 +659,12 @@ class OpenAICompatibleProvider(
                     }
                     val usageObj = json.optJSONObject("usage")
                     if (usageObj != null) {
-                        val promptDetails = usageObj.optJSONObject("prompt_tokens_details")
-                        val cachedTokens = promptDetails?.optInt("cached_tokens", 0) ?: 0
+                        val parsed = ModelPriceTable.parseOpenAiUsage(json)
                         emit(
                             ChatStreamEvent.Usage(
-                                promptTokens = usageObj.optInt("prompt_tokens", 0),
-                                completionTokens = usageObj.optInt("completion_tokens", 0),
-                                cachedTokens = cachedTokens
+                                promptTokens = parsed?.inputTokens ?: usageObj.optInt("prompt_tokens", 0),
+                                completionTokens = parsed?.outputTokens ?: usageObj.optInt("completion_tokens", 0),
+                                cachedInputTokens = parsed?.cachedInputTokens ?: 0
                             )
                         )
                     }
@@ -785,10 +784,18 @@ class OpenAICompatibleProvider(
         }
 
         val messagesArr = JSONArray()
-        if (!minimalCompatMode && request.supportsSystemPrompt && request.systemPrompt.isNotBlank()) {
+        val stableSystemText = if (request.baseSystemPrompt.isNotBlank() || request.enabledSkillsBlock.isNotBlank()) {
+            PromptCacheManager.buildStableSystemPrefix(
+                baseSystemPrompt = request.baseSystemPrompt.ifBlank { request.systemPrompt },
+                enabledSkillsBlock = request.enabledSkillsBlock
+            )
+        } else {
+            request.systemPrompt.trim()
+        }
+        if (!minimalCompatMode && request.supportsSystemPrompt && stableSystemText.isNotBlank()) {
             val sysObj = JSONObject()
             sysObj.put("role", "system")
-            sysObj.put("content", request.systemPrompt.trim())
+            sysObj.put("content", stableSystemText)
             messagesArr.put(sysObj)
         }
 
@@ -866,8 +873,8 @@ class OpenAICompatibleProvider(
         root.put("messages", messagesArr)
 
         if (!minimalCompatMode && request.tools.isNotEmpty()) {
+            val sortedTools = PromptCacheManager.sortToolsDeterministically(request.tools)
             val toolsArr = JSONArray()
-            val sortedTools = request.tools.sortedBy { it.toolName }
             for (tool in sortedTools) {
                 val paramsSchema = runCatching { JSONObject(tool.inputSchemaJson) }.getOrElse {
                     JSONObject().apply {

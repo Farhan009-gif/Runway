@@ -443,10 +443,8 @@ private fun OmniStudioRoot(
     // Persistent Media Gallery mode inside Create tab (Images | Videos | Gallery)
     var showPersistentGallery by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
 
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-    // Sync More sub-tab when navigated via ViewModel or Agent and clear active IME focus
+    // Sync More sub-tab when navigated via ViewModel or Agent
     LaunchedEffect(uiState.currentTab) {
-        focusManager.clearFocus()
         if (uiState.currentTab == WorkspaceTab.USAGE) {
             moreSubTab = 0
         } else if (uiState.currentTab == WorkspaceTab.SETTINGS && moreSubTab == 0) {
@@ -901,6 +899,7 @@ private fun OmniStudioRoot(
                                 conversationMetas = runwayConversationMetas,
                                 allMessageNodes = runwayAllMessageNodes,
                                 allDocuments = runwayAllDocuments,
+                                usageRecords = usageRecords,
                                 onSelectConversation = viewModel::selectConversation,
                                 onNewConversation = { viewModel.createNewConversation() },
                                 onContinueLatestConversation = viewModel::continueLatestConversation,
@@ -929,6 +928,9 @@ private fun OmniStudioRoot(
                                 onDraftChange = viewModel::updateDraftMessage,
                                 onAttachImage = viewModel::attachImage,
                                 onAddMediaAttachments = viewModel::addMediaAttachments,
+                                onAttachDocumentUris = viewModel::attachDocumentUris,
+                                onApplyAttachmentPreset = viewModel::applyAttachmentPresetPrompt,
+                                onDismissFirstTimeFileNotice = viewModel::dismissFirstTimeFileNotice,
                                 onRemoveMediaAttachment = viewModel::removeMediaAttachment,
                                 onClearMediaAttachments = viewModel::clearMediaAttachments,
                                 onSendMessage = viewModel::sendMessage,
@@ -957,6 +959,12 @@ private fun OmniStudioRoot(
                                 },
                                 onOpenTerminalAndHealthSheet = { viewModel.setShowTerminalAndHealthSheet(true) },
                                 onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                onToggleVoiceInput = viewModel::toggleVoiceInput,
+                                onStopVoiceSpeaking = viewModel::stopVoiceSpeaking,
+                                onAcceptCheaperModelSuggestion = viewModel::acceptCheaperModelSuggestion,
+                                onDismissCheaperModelSuggestion = viewModel::dismissCheaperModelSuggestion,
+                                onOverrideSpendingLimitOnce = viewModel::overrideSpendingLimitOnceForActiveChat,
+                                onSetContextTrimmingEnabled = viewModel::setContextTrimmingEnabledForChat,
                                 onGenerateMediaInChat = viewModel::generateMediaInChat,
                                 onUpsertCustomCombo = { rawId, displayName, strategy, targetModels, description ->
                                     viewModel.upsertOmniRouteCustomCombo(
@@ -1288,7 +1296,10 @@ private fun OmniStudioRoot(
                                             if (providersViewModel != null && providersUiState != null) {
                                                 ProvidersScreen(
                                                     uiState = providersUiState,
-                                                    viewModel = providersViewModel
+                                                    viewModel = providersViewModel,
+                                                    usageRecords = usageRecords,
+                                                    providerMonthlyLimitsUsd = uiState.providerMonthlyLimitsUsd,
+                                                    onSetProviderMonthlyLimitUsd = viewModel::setProviderMonthlyLimitUsd
                                                 )
                                             } else {
                                                 SettingsWorkspaceScreen(
@@ -1320,6 +1331,7 @@ private fun OmniStudioRoot(
                                                     onSetDynamicColor = viewModel::setDynamicColor,
                                                     onSetBiometricGate = viewModel::setBiometricGate,
                                                     onSetEnterToSend = viewModel::setEnterToSend,
+                                                    onSetReadRepliesAloud = viewModel::setReadRepliesAloud,
                                                     onSetSpendCurrency = viewModel::setSpendCurrency,
                                                     onOpenOnboardingSheet = { viewModel.setShowOnboardingSheet(true) },
                                                     onExportSettings = viewModel::prepareSettingsExport,
@@ -1335,6 +1347,7 @@ private fun OmniStudioRoot(
                                                 onSetThemeMode = viewModel::setThemeMode,
                                                 onSetBiometricGate = viewModel::setBiometricGate,
                                                 onSetEnterToSend = viewModel::setEnterToSend,
+                                                onSetReadRepliesAloud = viewModel::setReadRepliesAloud,
                                                 onSetSpendCurrency = viewModel::setSpendCurrency,
                                                 onOpenOnboardingSheet = { viewModel.setShowOnboardingSheet(true) },
                                                 onExportSettings = viewModel::prepareSettingsExport,
