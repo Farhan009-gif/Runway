@@ -85,7 +85,13 @@ import com.example.data.local.McpToolEntity
 import com.example.data.local.McpTransportType
 import com.example.data.local.SkillEntity
 import com.example.data.local.ToolCallLogEntity
+import android.webkit.WebView
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.viewinterop.AndroidView
+import com.example.data.mcp.JsSandboxExecutor
 import com.example.data.mcp.McpDiscoveryResult
+import com.example.data.mcp.RunnerLanguage
 import com.example.data.mcp.SkillMarkdownParser
 import com.example.data.provider.ModelCapabilityRegistry
 import com.example.ui.theme.AmberWarning
@@ -970,11 +976,13 @@ private fun McpServerItemCard(
 @Composable
 fun CollapsibleToolCallCard(
     log: ToolCallLogEntity,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenHtmlPreview: ((htmlDocument: String, title: String) -> Unit)? = null
 ) {
-    val isCodeExecution = log.toolName == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_TOOL_NAME ||
-        log.serverId == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_SERVER_ID
+    val isCodeExecution = log.toolName == JsSandboxExecutor.RUN_CODE_TOOL_NAME ||
+        log.serverId == JsSandboxExecutor.RUN_CODE_SERVER_ID
     var expanded by rememberSaveable(log.id) { mutableStateOf(isCodeExecution) }
+    var showInlinePreview by rememberSaveable(log.id) { mutableStateOf(false) }
     val statusLabel = when {
         log.isSuccess -> "SUCCESS"
         log.resultText.contains("denied", ignoreCase = true) -> "DENIED"
@@ -988,10 +996,41 @@ fun CollapsibleToolCallCard(
     val timeLabel = remember(log.createdAt) {
         SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(log.createdAt))
     }
-    val extractedCode = remember(log.argumentsJson, isCodeExecution) {
+    val confirmDetails = remember(log.argumentsJson, isCodeExecution) {
         if (isCodeExecution) {
-            com.example.data.mcp.JsSandboxExecutor.extractCodeFromArgumentsJson(log.argumentsJson)
-                .ifBlank { log.argumentsJson }
+            JsSandboxExecutor.buildRunConfirmationDetails(log.argumentsJson)
+        } else {
+            null
+        }
+    }
+    val isJavaRunner = confirmDetails?.language == RunnerLanguage.JAVA
+    val isHtmlCssJsRunner = isCodeExecution && !isJavaRunner
+    val previewHtmlDocument = remember(log.argumentsJson, isHtmlCssJsRunner, confirmDetails, log.resultText) {
+        if (isHtmlCssJsRunner && confirmDetails != null) {
+            when (confirmDetails.language) {
+                RunnerLanguage.HTML -> JsSandboxExecutor.buildFullHtmlDocument(
+                    html = confirmDetails.code,
+                    css = confirmDetails.css,
+                    js = confirmDetails.js
+                )
+                RunnerLanguage.CSS -> JsSandboxExecutor.buildFullHtmlDocument(
+                    html = "<div class=\"preview-root\"><h2>CSS Preview</h2><p>Styled preview container</p></div>",
+                    css = confirmDetails.code,
+                    js = confirmDetails.js
+                )
+                else -> JsSandboxExecutor.buildFullHtmlDocument(
+                    html = "<div id=\"app\"></div><pre id=\"console-out\">${log.resultText.replace("<", "&lt;")}</pre>",
+                    css = confirmDetails.css.ifBlank { "body { font-family: monospace; padding: 12px; }" },
+                    js = confirmDetails.code
+                )
+            }
+        } else {
+            null
+        }
+    }
+    val extractedCode = remember(log.argumentsJson, isCodeExecution, confirmDetails) {
+        if (isCodeExecution) {
+            confirmDetails?.code?.ifBlank { log.argumentsJson } ?: log.argumentsJson
         } else {
             log.argumentsJson
         }
@@ -1029,11 +1068,19 @@ fun CollapsibleToolCallCard(
                         modifier = Modifier.size(16.dp)
                     )
                     BadgePill(
-                        text = if (isCodeExecution) "JS SANDBOX" else "MCP TOOL",
+                        text = when {
+                            isJavaRunner -> "JAVA RUNNER"
+                            isCodeExecution -> "WEBVIEW SANDBOX"
+                            else -> "MCP TOOL"
+                        },
                         color = if (isCodeExecution) ElectricIndigo else CyberCyan
                     )
                     Text(
-                        text = if (isCodeExecution) "run_code (JavaScript)" else "${log.serverName} • ${log.toolName}",
+                        text = if (isCodeExecution) {
+                            "run_code (${confirmDetails?.languageLabel ?: "JavaScript"})"
+                        } else {
+                            "${log.serverName} • ${log.toolName}"
+                        },
                         style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFontFamily),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -1062,16 +1109,16 @@ fun CollapsibleToolCallCard(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
                     Text(
-                        text = if (isCodeExecution) {
-                            "Executed at $timeLabel • Isolated JS Sandbox (5s limit • 10 KB output cap)"
-                        } else {
-                            "Executed at $timeLabel • ${if (!log.isDestructiveOrWrite) "Read-Only Tool" else "Write/Mutating Tool"}"
+                        text = when {
+                            isJavaRunner -> "Executed at $timeLabel • Remote Java Runner (5s timeout • 10 KB output cap)"
+                            isCodeExecution -> "Executed at $timeLabel • Isolated WebView Sandbox (5s timeout • 4 MB limit • 10 KB output cap)"
+                            else -> "Executed at $timeLabel • ${if (!log.isDestructiveOrWrite) "Read-Only Tool" else "Write/Mutating Tool"}"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = if (isCodeExecution) "JavaScript Code:" else "Arguments JSON:",
+                        text = if (isCodeExecution) "${confirmDetails?.languageLabel ?: "JavaScript"} Code:" else "Arguments JSON:",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isCodeExecution) ElectricIndigo else CyberCyan
                     )
@@ -1087,7 +1134,7 @@ fun CollapsibleToolCallCard(
                         )
                     }
                     Text(
-                        text = if (isCodeExecution) "Sandbox Output:" else "Result Output:",
+                        text = if (isCodeExecution) "Runner Output:" else "Result Output:",
                         style = MaterialTheme.typography.labelSmall,
                         color = EmeraldConnected
                     )
@@ -1105,30 +1152,96 @@ fun CollapsibleToolCallCard(
                                 .padding(8.dp)
                         )
                     }
+
+                    if (isHtmlCssJsRunner && previewHtmlDocument != null && log.isSuccess) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                onClick = { showInlinePreview = !showInlinePreview },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("toggle_inline_html_preview_${log.id}")
+                            ) {
+                                Text(
+                                    text = if (showInlinePreview) "Hide Preview Panel" else "Show Preview Panel",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                            if (onOpenHtmlPreview != null) {
+                                Button(
+                                    onClick = {
+                                        onOpenHtmlPreview(
+                                            previewHtmlDocument,
+                                            "${confirmDetails?.languageLabel ?: "HTML / CSS / JS"} Preview"
+                                        )
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricIndigo),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("open_html_preview_panel_button_${log.id}")
+                                ) {
+                                    Text(
+                                        text = "Open Full Preview",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = androidx.compose.ui.graphics.Color.White
+                                    )
+                                }
+                            }
+                        }
+
+                        if (showInlinePreview) {
+                            SandboxedHtmlPreviewCard(
+                                htmlDocument = previewHtmlDocument,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                                    .testTag("runner_html_preview_panel_${log.id}")
+                            )
+                        }
+                    }
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
-                            imageVector = if (isCodeExecution) Icons.Default.Security else Icons.Default.Warning,
+                            imageVector = if (isCodeExecution && !isJavaRunner) Icons.Default.Security else Icons.Default.Warning,
                             contentDescription = null,
-                            tint = if (isCodeExecution) EmeraldConnected else AmberWarning,
+                            tint = if (isCodeExecution && !isJavaRunner) EmeraldConnected else AmberWarning,
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = if (isCodeExecution) {
-                                "Sandbox destroyed after run. No network, file, or app data access."
-                            } else {
-                                "Safety note: External MCP tool outputs can contain untrusted or prompt-injection text."
+                            text = when {
+                                isJavaRunner -> "Java runs on a remote server, so the code leaves the device."
+                                isCodeExecution -> "Sandbox destroyed after run. blockNetworkLoads=true, no file/content access, no JS bridges."
+                                else -> "Safety note: External MCP tool outputs can contain untrusted or prompt-injection text."
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (isCodeExecution) EmeraldConnected else AmberWarning
+                            color = if (isCodeExecution && !isJavaRunner) EmeraldConnected else AmberWarning
                         )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+fun SandboxedHtmlPreviewCard(
+    htmlDocument: String,
+    modifier: Modifier = Modifier,
+    css: String = "",
+    js: String = ""
+) {
+    WebViewPreviewer(
+        html = htmlDocument,
+        css = css,
+        js = js,
+        modifier = modifier
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1474,12 +1587,18 @@ fun ToolCallApprovalDialog(
     onDecision: (ToolApprovalDecision) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val isCodeExecution = request.tool.toolName == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_TOOL_NAME ||
-        request.server.id == com.example.data.mcp.JsSandboxExecutor.RUN_CODE_SERVER_ID
-    val extractedCode = remember(request.callRequest.argumentsJson, isCodeExecution) {
+    val isCodeExecution = request.tool.toolName == JsSandboxExecutor.RUN_CODE_TOOL_NAME ||
+        request.server.id == JsSandboxExecutor.RUN_CODE_SERVER_ID
+    val confirmDetails = remember(request.callRequest.argumentsJson, isCodeExecution) {
         if (isCodeExecution) {
-            com.example.data.mcp.JsSandboxExecutor.extractCodeFromArgumentsJson(request.callRequest.argumentsJson)
-                .ifBlank { request.callRequest.argumentsJson }
+            JsSandboxExecutor.buildRunConfirmationDetails(request.callRequest.argumentsJson)
+        } else {
+            null
+        }
+    }
+    val extractedCode = remember(request.callRequest.argumentsJson, isCodeExecution, confirmDetails) {
+        if (isCodeExecution) {
+            confirmDetails?.code?.ifBlank { request.callRequest.argumentsJson } ?: request.callRequest.argumentsJson
         } else {
             request.callRequest.argumentsJson
         }
@@ -1499,7 +1618,7 @@ fun ToolCallApprovalDialog(
                 .fillMaxWidth()
                 .wrapContentHeight()
         ) {
-            val maxSheetHeight = maxHeight * 0.70f
+            val maxSheetHeight = maxHeight * 0.75f
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1508,7 +1627,7 @@ fun ToolCallApprovalDialog(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1524,58 +1643,163 @@ fun ToolCallApprovalDialog(
                         }
                     )
                     Text(
-                        text = if (isCodeExecution) "Approve Sandboxed Code Execution?" else "Approve MCP Tool Execution?",
+                        text = if (isCodeExecution) "Run Code Confirmation" else "Approve MCP Tool Execution?",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(modifier = Modifier.wrapContentWidth()) {
-                        BadgePill(
-                            text = if (isCodeExecution) "JS SANDBOX" else request.server.name,
-                            color = if (isCodeExecution) ElectricIndigo else CyberCyan
-                        )
+                if (isCodeExecution && confirmDetails != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Language",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = confirmDetails.languageLabel,
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    color = ElectricIndigo,
+                                    modifier = Modifier.testTag("run_confirmation_language")
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Time limit",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${confirmDetails.timeLimitSeconds} seconds (${confirmDetails.timeLimitMs} ms)",
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    color = EmeraldConnected,
+                                    modifier = Modifier.testTag("run_confirmation_time_limit")
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Limits",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = if (confirmDetails.language == RunnerLanguage.JAVA) {
+                                        "10 KB output cap"
+                                    } else {
+                                        "4 MB memory • 10 KB output cap"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.testTag("run_confirmation_limits")
+                                )
+                            }
+                        }
                     }
-                    Box(modifier = Modifier.wrapContentWidth()) {
-                        BadgePill(
-                            text = when {
-                                isCodeExecution -> "ISOLATED • NO NETWORK / FILES"
-                                request.tool.isReadOnlyHint -> "READ-ONLY TOOL"
-                                else -> "WRITE / DELETE TOOL"
-                            },
-                            color = if (isCodeExecution || request.tool.isReadOnlyHint) EmeraldConnected else CoralError
-                        )
-                    }
-                    Box(modifier = Modifier.wrapContentWidth()) {
-                        BadgePill(
-                            text = if (request.maxIterations >= 51) "Tool turn ${request.iterationIndex} • Unlimited" else "Step ${request.iterationIndex}/${request.maxIterations}",
-                            color = ElectricIndigo
-                        )
-                    }
-                }
 
-                Text(
-                    text = "Tool: ${request.tool.toolName}",
-                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                    fontWeight = FontWeight.Bold
-                )
-                if (request.tool.description.isNotBlank()) {
+                    if (confirmDetails.isRemoteExecution && !confirmDetails.remoteServerNote.isNullOrBlank()) {
+                        Surface(
+                            color = AmberWarning.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, AmberWarning),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("run_confirmation_java_remote_note")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = AmberWarning,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = confirmDetails.remoteServerNote,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.wrapContentWidth()) {
+                            BadgePill(
+                                text = request.server.name,
+                                color = CyberCyan
+                            )
+                        }
+                        Box(modifier = Modifier.wrapContentWidth()) {
+                            BadgePill(
+                                text = if (request.tool.isReadOnlyHint) "READ-ONLY TOOL" else "WRITE / DELETE TOOL",
+                                color = if (request.tool.isReadOnlyHint) EmeraldConnected else CoralError
+                            )
+                        }
+                        Box(modifier = Modifier.wrapContentWidth()) {
+                            BadgePill(
+                                text = if (request.maxIterations >= 51) "Tool turn ${request.iterationIndex} • Unlimited" else "Step ${request.iterationIndex}/${request.maxIterations}",
+                                color = ElectricIndigo
+                            )
+                        }
+                    }
+
                     Text(
-                        text = request.tool.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "Tool: ${request.tool.toolName}",
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        fontWeight = FontWeight.Bold
                     )
+                    if (request.tool.description.isNotBlank()) {
+                        Text(
+                            text = request.tool.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
                 Text(
-                    text = if (isCodeExecution) "JavaScript code to run:" else "Arguments JSON to send:",
+                    text = if (isCodeExecution) {
+                        "Code to run (${confirmDetails?.languageLabel ?: "JavaScript"}):"
+                    } else {
+                        "Arguments JSON to send:"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isCodeExecution) ElectricIndigo else CyberCyan
                 )
@@ -1588,7 +1812,9 @@ fun ToolCallApprovalDialog(
                     Text(
                         text = extractedCode,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
-                        modifier = Modifier.padding(10.dp)
+                        modifier = Modifier
+                            .padding(10.dp)
+                            .testTag("run_confirmation_code")
                     )
                 }
 
@@ -1610,10 +1836,13 @@ fun ToolCallApprovalDialog(
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            text = if (isCodeExecution) {
-                                "Sandboxed JavaScript runs in an isolated environment with no network access, no file access, no app bridges, a 5-second timeout, a 4 MB memory cap, and 10 KB output truncation. The sandbox is destroyed immediately after execution."
-                            } else {
-                                "Prompt-Injection Warning: Tool results returned by external MCP servers are fed back into the model context and may contain untrusted or adversarial prompt-injection instructions."
+                            text = when {
+                                isCodeExecution && confirmDetails?.language == RunnerLanguage.JAVA ->
+                                    "Java runs on a remote server, so the code leaves the device. Execution is capped at 10 KB output and a 5-second timeout. Code never runs automatically."
+                                isCodeExecution ->
+                                    "HTML, CSS, and JavaScript run in an isolated WebView with blockNetworkLoads = true, allowFileAccess = false, allowContentAccess = false, no JavaScript bridges, a 5-second timeout, a 4 MB limit, and 10 KB output cap. Code never runs automatically."
+                                else ->
+                                    "Prompt-Injection Warning: Tool results returned by external MCP servers are fed back into the model context and may contain untrusted or adversarial prompt-injection instructions."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
@@ -1661,30 +1890,96 @@ fun ToolCallApprovalDialog(
                             .testTag("deny_tool_call_button")
                     ) {
                         Text(
-                            text = "Deny",
+                            text = if (isCodeExecution) "Cancel" else "Deny",
                             color = CoralError,
                             maxLines = 1,
                             softWrap = false
                         )
                     }
 
-                    OutlinedButton(
-                        onClick = { onDecision(ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY) },
-                        enabled = isCodeExecution || request.tool.isReadOnlyHint,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("approve_tool_conversation_button")
-                    ) {
-                        Text(
-                            text = if (isCodeExecution) "Always allow for this chat" else "Allow Read-Only for Thread",
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                    if (!isCodeExecution) {
+                        OutlinedButton(
+                            onClick = { onDecision(ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY) },
+                            enabled = request.tool.isReadOnlyHint,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("approve_tool_conversation_button")
+                        ) {
+                            Text(
+                                text = "Allow Read-Only for Thread",
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HtmlCssJsPreviewPanelSheet(
+    htmlDocument: String,
+    title: String,
+    onDismiss: () -> Unit,
+    css: String = "",
+    js: String = ""
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("html_css_js_preview_panel_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title.ifBlank { "HTML / CSS / JS Preview Panel" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Isolated WebView • blockNetworkLoads=true • allowFileAccess=false • allowContentAccess=false • no JS bridges",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("close_html_preview_panel_button")
+                ) {
+                    Text("Close")
+                }
+            }
+
+            WebViewPreviewer(
+                html = htmlDocument,
+                css = css,
+                js = js,
+                title = title.ifBlank { "Sandboxed HTML / CSS / JS Preview Panel" },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(380.dp)
+                    .testTag("html_preview_sheet_webview_card")
+            )
         }
     }
 }

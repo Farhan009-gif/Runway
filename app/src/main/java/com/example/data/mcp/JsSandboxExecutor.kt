@@ -4,8 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.example.data.local.McpApprovalMode
 import com.example.data.local.McpServerEntity
 import com.example.data.local.McpToolEntity
@@ -15,8 +18,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -38,7 +48,37 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Result of executing JavaScript inside the isolated sandbox.
+ * Supported languages in the Runway Code Runner.
+ * Note: Python is intentionally NOT supported.
+ */
+enum class RunnerLanguage(val id: String, val displayName: String) {
+    JAVASCRIPT("javascript", "JavaScript"),
+    HTML("html", "HTML"),
+    CSS("css", "CSS"),
+    JAVA("java", "Java")
+}
+
+/**
+ * Details shown on the Run confirmation sheet before every code execution.
+ */
+data class RunConfirmationDetails(
+    val language: RunnerLanguage,
+    val languageLabel: String,
+    val code: String,
+    val css: String = "",
+    val js: String = "",
+    val timeLimitMs: Long = JsSandboxExecutor.MAX_EXECUTION_TIME_MS,
+    val timeLimitSeconds: Int = (JsSandboxExecutor.MAX_EXECUTION_TIME_MS / 1000L).toInt(),
+    val timeLimitLabel: String = "${JsSandboxExecutor.MAX_EXECUTION_TIME_MS / 1000L} seconds",
+    val memoryLimitBytes: Int = JsSandboxExecutor.MAX_MEMORY_BYTES,
+    val outputCapBytes: Int = JsSandboxExecutor.MAX_OUTPUT_BYTES,
+    val requiresUserConfirmation: Boolean = true,
+    val isRemoteExecution: Boolean = false,
+    val remoteServerNote: String? = null
+)
+
+/**
+ * Result of executing code inside the isolated sandbox (HTML/CSS/JS) or remote Java runner.
  */
 data class JsSandboxExecutionResult(
     val outputText: String,
@@ -47,46 +87,242 @@ data class JsSandboxExecutionResult(
     val isMemoryExceeded: Boolean = false,
     val isOutputTruncated: Boolean = false,
     val sandboxDestroyed: Boolean = true,
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val language: RunnerLanguage = RunnerLanguage.JAVASCRIPT,
+    val renderedHtmlDocument: String? = null
 )
 
 /**
- * Isolated JavaScript Sandbox Executor for the `"run_code"` tool.
+ * Isolated Code Runner & Sandbox Executor for the `"run_code"` tool.
+ *
+ * Supported languages: HTML, CSS, JavaScript (local sandboxed WebView), and Java (remote runner).
+ * Python is not supported.
  *
  * Security & Resource Guarantees:
- * - Executes JavaScript only.
- * - Hidden WebView configured with NO network access (`blockNetworkLoads = true`),
- *   NO file/content access (`allowFileAccess = false`, `allowContentAccess = false`),
- *   NO DOM/database storage, and NO `addJavascriptInterface` bridges to app data.
- * - Never receives or exposes API keys, tokens, or stored chat history.
- * - Hard limits:
- *   1. 5 seconds execution timeout ([MAX_EXECUTION_TIME_MS] = 5,000 ms).
- *   2. Memory cap ([MAX_MEMORY_BYTES] = 4 MB) enforced on string/array/heap allocations.
- *   3. Output truncated to 10 KB ([MAX_OUTPUT_BYTES] = 10,240 bytes) before returning to the model.
- * - Destroys the sandbox (`WebView.destroy()` and scope wipe) in a `finally` block after every single run.
+ * - HTML, CSS, and JavaScript:
+ *   - Renders a full HTML document with its CSS and JS in a locked-down WebView.
+ *   - Configured with NO network access (`blockNetworkLoads = true`),
+ *     NO file/content access (`allowFileAccess = false`, `allowContentAccess = false`),
+ *     NO DOM/database storage, and NO `addJavascriptInterface` bridges to app data.
+ *   - Enforces a 5-second execution timeout ([MAX_EXECUTION_TIME_MS] = 5,000 ms) and 4 MB limit ([MAX_MEMORY_BYTES]).
+ *   - Output truncated to 10 KB ([MAX_OUTPUT_BYTES] = 10,240 bytes).
+ *   - Rendered result is shown only in a dedicated Preview Panel; model output is never rendered as HTML in the main chat.
+ * - Java:
+ *   - Runs through a user-configured remote runner URL with an optional encrypted API key stored in TinkSecretVault (never logged).
+ *   - Enforces a 5-second timeout ([MAX_EXECUTION_TIME_MS] = 5,000 ms) and 10 KB output cap ([MAX_OUTPUT_BYTES] = 10,240 bytes).
+ *   - If no runner is set up, returns a clear message explaining how to add one in Settings.
+ * - Safety for all languages:
+ *   - Every run requires explicit user confirmation via the Run confirmation sheet showing the language, code, and 5s time limit.
+ *   - Never runs code automatically.
+ *   - Shows an explicit note for Java: it runs on a remote server, so the code leaves the device.
  */
 object JsSandboxExecutor {
 
     const val RUN_CODE_TOOL_NAME = "run_code"
     const val RUN_CODE_SERVER_ID = "builtin_js_sandbox"
-    const val RUN_CODE_SERVER_NAME = "JS Sandbox"
+    const val RUN_CODE_SERVER_NAME = "Code Runner"
 
     const val MAX_EXECUTION_TIME_MS = 5_000L
-    const val MAX_MEMORY_BYTES = 4 * 1024 * 1024 // 4 MB sandbox allocation cap
+    const val MAX_MEMORY_BYTES = 4 * 1024 * 1024 // 4 MB sandbox allocation & document cap
     const val MAX_OUTPUT_BYTES = 10 * 1024 // 10 KB (10,240 bytes) output cap
 
+    const val JAVA_REMOTE_SERVER_NOTE =
+        "Java runs on a remote server, so the code leaves the device."
+
+    const val NO_JAVA_RUNNER_MESSAGE =
+        "No Java remote runner is set up. To run Java code, open Settings → Code Runner (Java Remote Runner), enter your runner URL (and optional key), and tap Save."
+
     private const val TRUNCATION_NOTICE = "\n...[Output truncated to 10 KB sandbox limit]"
+
+    private val javaRunnerHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(MAX_EXECUTION_TIME_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(MAX_EXECUTION_TIME_MS, TimeUnit.MILLISECONDS)
+            .writeTimeout(MAX_EXECUTION_TIME_MS, TimeUnit.MILLISECONDS)
+            .callTimeout(MAX_EXECUTION_TIME_MS, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+            // Intentionally NO logging interceptors so the runner key and code are never logged.
+            .build()
+    }
+
+    /**
+     * Returns true ONLY for HTML, CSS, JavaScript, and Java.
+     * Python and other languages return false.
+     */
+    fun isSupportedRunnerLanguage(rawLanguage: String): Boolean {
+        return when (rawLanguage.trim().lowercase()) {
+            "js", "javascript", "ecmascript",
+            "html", "htm", "html5", "html/css/js",
+            "css", "stylesheet",
+            "java" -> true
+            else -> false
+        }
+    }
+
+    /**
+     * Resolves a language tag or code snippet to one of the supported [RunnerLanguage] values,
+     * or returns null if an unsupported language (e.g. Python) was explicitly specified.
+     */
+    fun resolveRunnerLanguageOrNull(rawLanguage: String, code: String = ""): RunnerLanguage? {
+        val norm = rawLanguage.trim().lowercase()
+        if (norm.isNotEmpty() && norm != "code" && norm != "text") {
+            return when (norm) {
+                "js", "javascript", "ecmascript" -> RunnerLanguage.JAVASCRIPT
+                "html", "htm", "html5", "html/css/js" -> RunnerLanguage.HTML
+                "css", "stylesheet" -> RunnerLanguage.CSS
+                "java" -> RunnerLanguage.JAVA
+                else -> null
+            }
+        }
+        val trimmedCode = code.trim()
+        return when {
+            trimmedCode.startsWith("<!DOCTYPE", ignoreCase = true) ||
+                trimmedCode.startsWith("<html", ignoreCase = true) ||
+                trimmedCode.startsWith("<style", ignoreCase = true) ||
+                trimmedCode.startsWith("<body", ignoreCase = true) ||
+                (trimmedCode.contains("<div", ignoreCase = true) && trimmedCode.contains("</div>", ignoreCase = true)) ->
+                RunnerLanguage.HTML
+            Regex("""\bclass\s+[A-Za-z_][A-Za-z0-9_]*[\s\S]*\bpublic\s+static\s+void\s+main\s*\(""").containsMatchIn(trimmedCode) ||
+                trimmedCode.contains("System.out.print") ->
+                RunnerLanguage.JAVA
+            else -> RunnerLanguage.JAVASCRIPT
+        }
+    }
+
+    fun resolveRunnerLanguage(rawLanguage: String, code: String = ""): RunnerLanguage {
+        return resolveRunnerLanguageOrNull(rawLanguage, code) ?: RunnerLanguage.JAVASCRIPT
+    }
+
+    /**
+     * Safety rule: Code execution MUST NEVER run automatically. Every single run requires
+     * explicit user confirmation via the Run confirmation sheet.
+     */
+    fun requiresUserConfirmationBeforeEveryRun(language: String = ""): Boolean = true
+
+    /**
+     * Builds the structured confirmation payload displayed on the Run confirmation sheet
+     * before every execution (language, code, 5-second time limit, and Java remote server note).
+     */
+    fun buildRunConfirmationDetails(
+        argumentsJsonOrCode: String,
+        explicitLanguage: String? = null
+    ): RunConfirmationDetails {
+        val trimmed = argumentsJsonOrCode.trim()
+        var extractedLang = explicitLanguage?.trim().orEmpty()
+        var extractedCode = trimmed
+        var extractedCss = ""
+        var extractedJs = ""
+
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val fields = parseFlatJsonMap(trimmed)
+            if (extractedLang.isEmpty()) {
+                extractedLang = fields["language"]?.trim().orEmpty()
+            }
+            extractedCss = fields["css"].orEmpty()
+            extractedJs = fields["js"].orEmpty()
+                .ifBlank { fields["javascript"].orEmpty() }
+            val htmlField = fields["html"].orEmpty()
+            val codeField = fields["code"].orEmpty()
+                .ifBlank { fields["script"].orEmpty() }
+            extractedCode = when {
+                htmlField.isNotBlank() -> {
+                    if (extractedLang.isEmpty()) extractedLang = "html"
+                    htmlField
+                }
+                codeField.isNotBlank() -> codeField
+                extractedCss.isNotBlank() && extractedJs.isBlank() -> {
+                    if (extractedLang.isEmpty()) extractedLang = "css"
+                    extractedCss
+                }
+                extractedJs.isNotBlank() -> {
+                    if (extractedLang.isEmpty()) extractedLang = "javascript"
+                    extractedJs
+                }
+                else -> trimmed
+            }
+        }
+
+        val resolvedLang = resolveRunnerLanguage(extractedLang, extractedCode)
+        val hasCombinedWebParts = resolvedLang == RunnerLanguage.HTML &&
+            (extractedCss.isNotBlank() || extractedJs.isNotBlank() ||
+                extractedCode.contains("<style", ignoreCase = true) ||
+                extractedCode.contains("<script", ignoreCase = true))
+        val languageLabel = when {
+            resolvedLang == RunnerLanguage.JAVA -> "Java"
+            hasCombinedWebParts -> "HTML / CSS / JavaScript"
+            else -> resolvedLang.displayName
+        }
+
+        val displayCode = buildString {
+            append(extractedCode)
+            if (extractedCss.isNotBlank() && extractedCss != extractedCode) {
+                if (isNotEmpty()) append("\n\n/* --- CSS --- */\n")
+                append(extractedCss)
+            }
+            if (extractedJs.isNotBlank() && extractedJs != extractedCode) {
+                if (isNotEmpty()) append("\n\n// --- JavaScript ---\n")
+                append(extractedJs)
+            }
+        }
+
+        val isJava = resolvedLang == RunnerLanguage.JAVA
+        return RunConfirmationDetails(
+            language = resolvedLang,
+            languageLabel = languageLabel,
+            code = displayCode,
+            css = extractedCss,
+            js = extractedJs,
+            timeLimitMs = MAX_EXECUTION_TIME_MS,
+            timeLimitSeconds = (MAX_EXECUTION_TIME_MS / 1000L).toInt(),
+            timeLimitLabel = "${MAX_EXECUTION_TIME_MS / 1000L} seconds",
+            memoryLimitBytes = MAX_MEMORY_BYTES,
+            outputCapBytes = MAX_OUTPUT_BYTES,
+            requiresUserConfirmation = true,
+            isRemoteExecution = isJava,
+            remoteServerNote = if (isJava) JAVA_REMOTE_SERVER_NOTE else null
+        )
+    }
+
+    /**
+     * Encodes a manual or tool code execution request into a canonical JSON arguments string.
+     */
+    fun buildRunCodeArgumentsJson(
+        language: String,
+        code: String,
+        css: String = "",
+        js: String = ""
+    ): String {
+        val normLang = language.trim().lowercase().ifBlank { "javascript" }
+        return buildString {
+            append("{\"language\":\"")
+            append(escapeJsonString(normLang))
+            append("\",\"code\":\"")
+            append(escapeJsonString(code))
+            append("\"")
+            if (css.isNotBlank()) {
+                append(",\"css\":\"")
+                append(escapeJsonString(css))
+                append("\"")
+            }
+            if (js.isNotBlank()) {
+                append(",\"js\":\"")
+                append(escapeJsonString(js))
+                append("\"")
+            }
+            append("}")
+        }
+    }
 
     fun buildRunCodeServerEntity(): McpServerEntity {
         return McpServerEntity(
             id = RUN_CODE_SERVER_ID,
             name = RUN_CODE_SERVER_NAME,
-            url = "sandbox://javascript/isolated",
+            url = "sandbox://code-runner/isolated",
             transport = McpTransportType.STREAMABLE_HTTP.name,
             authHeaderName = "",
             approvalMode = McpApprovalMode.ASK_EVERY_TIME.name,
             isEnabled = true,
-            lastTestStatus = "Isolated Sandbox Ready (No Network • No File Access • 5s Limit)"
+            lastTestStatus = "Code Runner Ready (HTML/CSS/JS Isolated Sandbox • Remote Java • 5s Limit)"
         )
     }
 
@@ -98,8 +334,8 @@ object JsSandboxExecutor {
             serverId = RUN_CODE_SERVER_ID,
             serverName = RUN_CODE_SERVER_NAME,
             toolName = RUN_CODE_TOOL_NAME,
-            description = "Execute JavaScript in an isolated sandbox (no network, no file access, 5s timeout, 10KB output cap).",
-            inputSchemaJson = """{"type":"object","properties":{"code":{"type":"string","description":"JavaScript code to execute in the isolated sandbox."}},"required":["code"]}""",
+            description = "Execute HTML, CSS, JavaScript (in an isolated local WebView sandbox with no network/file access, 5s timeout, 4MB limit) or Java (via configured remote runner, 5s timeout, 10KB output cap). Requires user confirmation before every run.",
+            inputSchemaJson = """{"type":"object","properties":{"language":{"type":"string","enum":["javascript","html","css","java"],"description":"Language to run: javascript, html, css, or java."},"code":{"type":"string","description":"Source code or HTML document to execute."},"css":{"type":"string","description":"Optional CSS styles when rendering HTML."},"js":{"type":"string","description":"Optional JavaScript code when rendering HTML."}},"required":["code"]}""",
             isReadOnlyHint = false,
             isEnabled = true
         )
@@ -113,12 +349,17 @@ object JsSandboxExecutor {
     fun extractJsCodeFromArguments(argumentsJson: String): String {
         val trimmed = argumentsJson.trim()
         if (trimmed.isEmpty()) return ""
-        return runCatching {
-            val obj = JSONObject(trimmed)
-            obj.optString("code", "")
-                .ifBlank { obj.optString("javascript", "") }
-                .ifBlank { obj.optString("script", "") }
-        }.getOrDefault(trimmed)
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val fields = parseFlatJsonMap(trimmed)
+            val extracted = fields["code"].orEmpty()
+                .ifBlank { fields["html"].orEmpty() }
+                .ifBlank { fields["javascript"].orEmpty() }
+                .ifBlank { fields["js"].orEmpty() }
+                .ifBlank { fields["css"].orEmpty() }
+                .ifBlank { fields["script"].orEmpty() }
+            if (extracted.isNotBlank()) return extracted
+        }
+        return trimmed
     }
 
     fun extractCodeFromArgumentsJson(argumentsJson: String): String =
@@ -171,6 +412,778 @@ object JsSandboxExecutor {
     }
 
     /**
+     * Applies strict security settings to any WebView used for sandbox execution or HTML preview:
+     * - blockNetworkLoads = true
+     * - allowFileAccess = false
+     * - allowContentAccess = false
+     * - no JavaScript bridges
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    fun configureLockedDownWebView(wv: WebView) {
+        wv.settings.apply {
+            javaScriptEnabled = true
+            blockNetworkLoads = true
+            blockNetworkImage = true
+            allowFileAccess = false
+            allowContentAccess = false
+            @Suppress("DEPRECATION")
+            allowFileAccessFromFileURLs = false
+            @Suppress("DEPRECATION")
+            allowUniversalAccessFromFileURLs = false
+            domStorageEnabled = false
+            databaseEnabled = false
+            cacheMode = WebSettings.LOAD_NO_CACHE
+            saveFormData = false
+            javaScriptCanOpenWindowsAutomatically = false
+            setSupportMultipleWindows(false)
+            setSupportZoom(false)
+        }
+        // Remove any legacy system JS interfaces and NEVER call addJavascriptInterface
+        runCatching {
+            wv.removeJavascriptInterface("searchBoxJavaBridge_")
+            wv.removeJavascriptInterface("accessibility")
+            wv.removeJavascriptInterface("accessibilityTraversal")
+        }
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                // Block all external navigation inside the sandbox
+                return true
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                val url = request?.url?.toString()?.lowercase().orEmpty()
+                if (url.isNotEmpty() && url != "about:blank" && !url.startsWith("data:")) {
+                    return WebResourceResponse(
+                        "text/plain",
+                        "UTF-8",
+                        ByteArrayInputStream("Blocked by sandbox".toByteArray(StandardCharsets.UTF_8))
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+        }
+    }
+
+    /**
+     * Builds a complete, self-contained HTML5 document combining HTML, CSS, and JavaScript
+     * along with sandbox instrumentation (console capture, memory limit tracking, and network/storage blocking).
+     */
+    fun buildFullHtmlDocument(
+        html: String,
+        css: String = "",
+        js: String = "",
+        maxMemoryBytes: Int = MAX_MEMORY_BYTES
+    ): String {
+        val trimmedHtml = html.trim()
+        if (trimmedHtml.contains("window.__sandboxMaxBytes") && css.isBlank() && js.isBlank()) {
+            return trimmedHtml
+        }
+        val guardScript = """
+            <script>
+            (function() {
+                "use strict";
+                window.__sandboxLogs = [];
+                window.__sandboxErrors = [];
+                window.__sandboxBytesUsed = 0;
+                window.__sandboxMaxBytes = $maxMemoryBytes;
+                window.__sandboxMemoryExceeded = false;
+                window.__trackSandboxBytes = function(str) {
+                    var s = String(str);
+                    window.__sandboxBytesUsed += s.length * 2;
+                    if (window.__sandboxBytesUsed > window.__sandboxMaxBytes) {
+                        window.__sandboxMemoryExceeded = true;
+                        var err = new Error("Sandbox Memory Limit Exceeded (" + window.__sandboxMaxBytes + " bytes)");
+                        err.__memoryExceeded = true;
+                        throw err;
+                    }
+                    return s;
+                };
+                var origConsole = window.console || {};
+                window.console = {
+                    log: function() {
+                        var parts = [];
+                        for (var i = 0; i < arguments.length; i++) {
+                            var a = arguments[i];
+                            parts.push(typeof a === 'object' ? JSON.stringify(a) : String(a));
+                        }
+                        window.__sandboxLogs.push(window.__trackSandboxBytes(parts.join(' ')));
+                    },
+                    warn: function() { window.console.log.apply(window.console, arguments); },
+                    error: function() {
+                        var parts = [];
+                        for (var i = 0; i < arguments.length; i++) {
+                            var a = arguments[i];
+                            parts.push(typeof a === 'object' ? JSON.stringify(a) : String(a));
+                        }
+                        var line = window.__trackSandboxBytes(parts.join(' '));
+                        window.__sandboxErrors.push(line);
+                        window.__sandboxLogs.push("Error: " + line);
+                    },
+                    info: function() { window.console.log.apply(window.console, arguments); }
+                };
+                window.onerror = function(msg) {
+                    var s = String(msg || "Script error");
+                    if (s.indexOf("Memory Limit") !== -1) window.__sandboxMemoryExceeded = true;
+                    window.__sandboxErrors.push(s);
+                    return true;
+                };
+                try { Object.defineProperty(window, 'fetch', { value: undefined, writable: false }); } catch (e) {}
+                try { Object.defineProperty(window, 'XMLHttpRequest', { value: undefined, writable: false }); } catch (e) {}
+                try { Object.defineProperty(window, 'WebSocket', { value: undefined, writable: false }); } catch (e) {}
+                try { Object.defineProperty(window, 'EventSource', { value: undefined, writable: false }); } catch (e) {}
+            })();
+            </script>
+        """.trimIndent()
+
+        val styleBlock = if (css.isNotBlank()) "<style>\n$css\n</style>" else ""
+        val scriptBlock = if (js.isNotBlank()) "<script>\n$js\n</script>" else ""
+
+        return if (trimmedHtml.contains("<html", ignoreCase = true) ||
+            trimmedHtml.startsWith("<!DOCTYPE", ignoreCase = true)
+        ) {
+            var doc = trimmedHtml
+            doc = if (doc.contains("<head>", ignoreCase = true)) {
+                doc.replaceFirst(Regex("(?i)<head>"), "<head>\n$guardScript\n$styleBlock")
+            } else {
+                "$guardScript\n$styleBlock\n$doc"
+            }
+            if (scriptBlock.isNotEmpty()) {
+                doc = if (doc.contains("</body>", ignoreCase = true)) {
+                    doc.replaceFirst(Regex("(?i)</body>"), "$scriptBlock\n</body>")
+                } else {
+                    "$doc\n$scriptBlock"
+                }
+            }
+            doc
+        } else {
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            $guardScript
+            $styleBlock
+            </head>
+            <body>
+            $trimmedHtml
+            $scriptBlock
+            </body>
+            </html>
+            """.trimIndent()
+        }
+    }
+
+    /**
+     * Unified entry point for running HTML, CSS, JavaScript, or Java from a JSON arguments payload
+     * or raw code string. Rejects unsupported languages (such as Python).
+     */
+    suspend fun executeRunnerFromArguments(
+        context: Context? = null,
+        argumentsJson: String,
+        javaRunnerUrl: String = "",
+        javaRunnerApiKey: String = "",
+        timeoutMs: Long = MAX_EXECUTION_TIME_MS,
+        maxMemoryBytes: Int = MAX_MEMORY_BYTES,
+        maxOutputBytes: Int = MAX_OUTPUT_BYTES
+    ): JsSandboxExecutionResult {
+        val trimmed = argumentsJson.trim()
+        val parsedFields = if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            parseFlatJsonMap(trimmed)
+        } else {
+            emptyMap()
+        }
+        val explicitLanguage = parsedFields["language"]?.trim().orEmpty()
+        if (explicitLanguage.isNotEmpty() && !isSupportedRunnerLanguage(explicitLanguage)) {
+            return JsSandboxExecutionResult(
+                outputText = "Unsupported language '$explicitLanguage'. Only HTML, CSS, JavaScript, and Java are supported.",
+                isSuccess = false,
+                sandboxDestroyed = true,
+                durationMs = 1L
+            )
+        }
+        val details = buildRunConfirmationDetails(argumentsJson, explicitLanguage.ifEmpty { null })
+        return when (details.language) {
+            RunnerLanguage.JAVA -> {
+                executeRemoteJava(
+                    code = details.code,
+                    runnerUrl = javaRunnerUrl,
+                    apiKey = javaRunnerApiKey,
+                    timeoutMs = timeoutMs,
+                    maxOutputBytes = maxOutputBytes
+                )
+            }
+            RunnerLanguage.HTML, RunnerLanguage.CSS -> {
+                val htmlField = parsedFields["html"].orEmpty()
+                val htmlPart = when {
+                    htmlField.isNotBlank() -> htmlField
+                    details.language == RunnerLanguage.CSS -> {
+                        "<div class=\"preview-root\">CSS Preview Rendered</div>"
+                    }
+                    else -> extractJsCodeFromArguments(argumentsJson)
+                }
+                val cssPart = when {
+                    details.css.isNotBlank() -> details.css
+                    details.language == RunnerLanguage.CSS -> extractJsCodeFromArguments(argumentsJson)
+                    else -> ""
+                }
+                executeSandboxedHtmlCssJs(
+                    context = context,
+                    html = htmlPart,
+                    css = cssPart,
+                    js = details.js,
+                    language = details.language,
+                    timeoutMs = timeoutMs,
+                    maxMemoryBytes = maxMemoryBytes,
+                    maxOutputBytes = maxOutputBytes
+                )
+            }
+            RunnerLanguage.JAVASCRIPT -> {
+                val codeOnly = extractJsCodeFromArguments(argumentsJson).ifBlank { argumentsJson }
+                if (details.css.isNotBlank() || codeOnly.trimStart().startsWith("<")) {
+                    executeSandboxedHtmlCssJs(
+                        context = context,
+                        html = if (codeOnly.trimStart().startsWith("<")) codeOnly else "<div id=\"app\"></div>",
+                        css = details.css,
+                        js = if (codeOnly.trimStart().startsWith("<")) details.js else codeOnly,
+                        language = RunnerLanguage.HTML,
+                        timeoutMs = timeoutMs,
+                        maxMemoryBytes = maxMemoryBytes,
+                        maxOutputBytes = maxOutputBytes
+                    )
+                } else {
+                    executeSandboxedJs(
+                        context = context,
+                        code = codeOnly,
+                        timeoutMs = timeoutMs,
+                        maxMemoryBytes = maxMemoryBytes,
+                        maxOutputBytes = maxOutputBytes
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Renders a full HTML document with its CSS and JS in a locked-down WebView
+     * (`blockNetworkLoads = true`, `allowFileAccess = false`, `allowContentAccess = false`, no JS bridges)
+     * enforcing the 5-second timeout and 4 MB limit.
+     */
+    suspend fun executeSandboxedHtmlCssJs(
+        context: Context? = null,
+        html: String,
+        css: String = "",
+        js: String = "",
+        language: RunnerLanguage = RunnerLanguage.HTML,
+        timeoutMs: Long = MAX_EXECUTION_TIME_MS,
+        maxMemoryBytes: Int = MAX_MEMORY_BYTES,
+        maxOutputBytes: Int = MAX_OUTPUT_BYTES,
+        dispatcher: CoroutineDispatcher = Dispatchers.Default
+    ): JsSandboxExecutionResult = withContext(dispatcher) {
+        val startMs = System.currentTimeMillis()
+        if (html.isBlank() && css.isBlank() && js.isBlank()) {
+            return@withContext JsSandboxExecutionResult(
+                outputText = "Error: No HTML, CSS, or JavaScript provided to run_code.",
+                isSuccess = false,
+                sandboxDestroyed = true,
+                durationMs = 1L,
+                language = language
+            )
+        }
+
+        val combinedRawBytes = (html.toByteArray(StandardCharsets.UTF_8).size +
+            css.toByteArray(StandardCharsets.UTF_8).size +
+            js.toByteArray(StandardCharsets.UTF_8).size)
+        if (combinedRawBytes > maxMemoryBytes) {
+            return@withContext JsSandboxExecutionResult(
+                outputText = "Sandbox Memory Limit Exceeded: Document size ($combinedRawBytes bytes) exceeds 4 MB cap ($maxMemoryBytes bytes).",
+                isSuccess = false,
+                isMemoryExceeded = true,
+                sandboxDestroyed = true,
+                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                language = language
+            )
+        }
+
+        val fullDoc = buildFullHtmlDocument(
+            html = html,
+            css = css,
+            js = js,
+            maxMemoryBytes = maxMemoryBytes
+        )
+        val fullDocBytes = fullDoc.toByteArray(StandardCharsets.UTF_8).size
+        if (fullDocBytes > maxMemoryBytes) {
+            return@withContext JsSandboxExecutionResult(
+                outputText = "Sandbox Memory Limit Exceeded: Full HTML document ($fullDocBytes bytes) exceeds cap ($maxMemoryBytes bytes).",
+                isSuccess = false,
+                isMemoryExceeded = true,
+                sandboxDestroyed = true,
+                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                language = language
+            )
+        }
+
+        // Extract inline <script> blocks from user HTML + explicit js parameter for forbidden API check
+        val inlineScripts = extractScriptBlocksFromHtml(html)
+        val allJsToCheck = (inlineScripts + listOf(js)).filter { it.isNotBlank() }.joinToString("\n")
+        if (allJsToCheck.isNotBlank()) {
+            checkForbiddenApis(allJsToCheck)?.let { securityErr ->
+                return@withContext JsSandboxExecutionResult(
+                    outputText = securityErr,
+                    isSuccess = false,
+                    sandboxDestroyed = true,
+                    durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                    language = language
+                )
+            }
+        }
+
+        // Try real locked-down Android WebView when available
+        if (context != null && isRealAndroidWebViewAvailable()) {
+            val webViewResult = runCatching {
+                renderHtmlDocumentInIsolatedWebView(
+                    context = context,
+                    fullHtmlDocument = fullDoc,
+                    language = language,
+                    timeoutMs = timeoutMs,
+                    maxOutputBytes = maxOutputBytes
+                )
+            }.getOrNull()
+            if (webViewResult != null) {
+                return@withContext webViewResult
+            }
+        }
+
+        // Deterministic JVM/Robolectric execution: run any embedded JS inside the isolated JVM sandbox
+        // with the 5s timeout and 4 MB memory cap, and extract rendered text summary for output.
+        val visibleHtmlText = stripHtmlTagsToVisibleText(html)
+        if (allJsToCheck.isNotBlank()) {
+            val jsResult = executeInPureJvmSandbox(
+                code = allJsToCheck,
+                timeoutMs = timeoutMs,
+                maxMemoryBytes = maxMemoryBytes,
+                maxOutputBytes = maxOutputBytes,
+                startMs = startMs
+            )
+            if (!jsResult.isSuccess) {
+                return@withContext jsResult.copy(
+                    language = language,
+                    renderedHtmlDocument = if (jsResult.isTimedOut || jsResult.isMemoryExceeded) null else fullDoc
+                )
+            }
+            val combinedOutput = buildString {
+                if (visibleHtmlText.isNotBlank()) {
+                    appendLine("[Rendered HTML Preview]")
+                    appendLine(visibleHtmlText)
+                }
+                if (jsResult.outputText.isNotBlank() && jsResult.outputText != "(No output)") {
+                    if (isNotEmpty()) appendLine()
+                    appendLine("[Console Output]")
+                    append(jsResult.outputText)
+                }
+            }.ifBlank { "[Rendered HTML/CSS/JS document ready in Preview Panel]" }
+            val (truncated, wasTruncated) = truncateOutputToLimit(combinedOutput, maxOutputBytes)
+            return@withContext JsSandboxExecutionResult(
+                outputText = truncated,
+                isSuccess = true,
+                isTimedOut = false,
+                isMemoryExceeded = false,
+                isOutputTruncated = wasTruncated || jsResult.isOutputTruncated,
+                sandboxDestroyed = true,
+                durationMs = jsResult.durationMs,
+                language = language,
+                renderedHtmlDocument = fullDoc
+            )
+        } else {
+            val summary = if (visibleHtmlText.isNotBlank()) {
+                "[Rendered HTML Preview]\n$visibleHtmlText"
+            } else {
+                "[Rendered HTML/CSS document ready in Preview Panel]"
+            }
+            val (truncated, wasTruncated) = truncateOutputToLimit(summary, maxOutputBytes)
+            return@withContext JsSandboxExecutionResult(
+                outputText = truncated,
+                isSuccess = true,
+                isTimedOut = false,
+                isMemoryExceeded = false,
+                isOutputTruncated = wasTruncated,
+                sandboxDestroyed = true,
+                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                language = language,
+                renderedHtmlDocument = fullDoc
+            )
+        }
+    }
+
+    /**
+     * Executes Java code on a user-configured remote runner URL with a 5-second timeout and
+     * 10 KB output cap. The optional API key is retrieved from the encrypted vault and is never logged.
+     */
+    suspend fun executeRemoteJava(
+        code: String,
+        runnerUrl: String,
+        apiKey: String = "",
+        timeoutMs: Long = MAX_EXECUTION_TIME_MS,
+        maxOutputBytes: Int = MAX_OUTPUT_BYTES,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+        customTransport: (suspend (url: String, payloadJson: String, headers: Map<String, String>, timeoutMs: Long) -> Pair<Int, String>)? = null
+    ): JsSandboxExecutionResult = withContext(dispatcher) {
+        val startMs = System.currentTimeMillis()
+        val cleanUrl = runnerUrl.trim()
+        if (cleanUrl.isEmpty()) {
+            return@withContext JsSandboxExecutionResult(
+                outputText = NO_JAVA_RUNNER_MESSAGE,
+                isSuccess = false,
+                isTimedOut = false,
+                isMemoryExceeded = false,
+                isOutputTruncated = false,
+                sandboxDestroyed = true,
+                durationMs = 1L,
+                language = RunnerLanguage.JAVA
+            )
+        }
+
+        val cleanCode = code.trim()
+        if (cleanCode.isEmpty()) {
+            return@withContext JsSandboxExecutionResult(
+                outputText = "Error: No Java code provided to run_code.",
+                isSuccess = false,
+                sandboxDestroyed = true,
+                durationMs = 1L,
+                language = RunnerLanguage.JAVA
+            )
+        }
+
+        val payloadJson = buildString {
+            append("{\"language\":\"java\",\"code\":\"")
+            append(escapeJsonString(cleanCode))
+            append("\",\"timeoutMs\":")
+            append(timeoutMs)
+            append("}")
+        }
+
+        val headers = mutableMapOf(
+            "Content-Type" to "application/json",
+            "Accept" to "application/json"
+        )
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isNotEmpty()) {
+            headers["Authorization"] = "Bearer $trimmedKey"
+            headers["X-Runner-Key"] = trimmedKey
+        }
+
+        fun redactSecret(input: String): String {
+            if (trimmedKey.isEmpty() || input.isEmpty()) return input
+            return input.replace(trimmedKey, "[REDACTED_KEY]")
+        }
+
+        try {
+            val responsePair = withTimeoutOrNull(timeoutMs) {
+                if (customTransport != null) {
+                    customTransport(cleanUrl, payloadJson, headers, timeoutMs)
+                } else {
+                    val client = if (timeoutMs == MAX_EXECUTION_TIME_MS) {
+                        javaRunnerHttpClient
+                    } else {
+                        javaRunnerHttpClient.newBuilder()
+                            .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                            .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                            .build()
+                    }
+                    val reqBuilder = Request.Builder()
+                        .url(cleanUrl)
+                        .post(payloadJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    for ((k, v) in headers) {
+                        reqBuilder.header(k, v)
+                    }
+                    client.newCall(reqBuilder.build()).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        resp.code to bodyStr
+                    }
+                }
+            }
+
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            if (responsePair == null) {
+                return@withContext JsSandboxExecutionResult(
+                    outputText = "Java Runner Timeout Error: Remote execution exceeded ${timeoutMs}ms (5s) limit and was terminated.",
+                    isSuccess = false,
+                    isTimedOut = true,
+                    sandboxDestroyed = true,
+                    durationMs = elapsed.coerceAtLeast(timeoutMs),
+                    language = RunnerLanguage.JAVA
+                )
+            }
+
+            val (statusCode, rawBody) = responsePair
+            val safeBody = redactSecret(rawBody)
+            val parsedOutput = parseJavaRunnerResponse(safeBody, statusCode)
+            val (truncatedText, wasTruncated) = truncateOutputToLimit(parsedOutput.first, maxOutputBytes)
+
+            JsSandboxExecutionResult(
+                outputText = truncatedText.ifBlank { "(No output)" },
+                isSuccess = parsedOutput.second,
+                isTimedOut = false,
+                isMemoryExceeded = false,
+                isOutputTruncated = wasTruncated,
+                sandboxDestroyed = true,
+                durationMs = elapsed,
+                language = RunnerLanguage.JAVA
+            )
+        } catch (e: SocketTimeoutException) {
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(timeoutMs)
+            JsSandboxExecutionResult(
+                outputText = "Java Runner Timeout Error: Remote execution exceeded ${timeoutMs}ms (5s) limit.",
+                isSuccess = false,
+                isTimedOut = true,
+                sandboxDestroyed = true,
+                durationMs = elapsed,
+                language = RunnerLanguage.JAVA
+            )
+        } catch (e: InterruptedIOException) {
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(timeoutMs)
+            JsSandboxExecutionResult(
+                outputText = "Java Runner Timeout Error: Remote execution exceeded ${timeoutMs}ms (5s) limit.",
+                isSuccess = false,
+                isTimedOut = true,
+                sandboxDestroyed = true,
+                durationMs = elapsed,
+                language = RunnerLanguage.JAVA
+            )
+        } catch (t: Throwable) {
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            val safeMsg = redactSecret(t.message ?: t.javaClass.simpleName)
+            val timedOut = elapsed >= timeoutMs ||
+                safeMsg.contains("timeout", ignoreCase = true) ||
+                safeMsg.contains("timed out", ignoreCase = true) ||
+                safeMsg.contains("canceled", ignoreCase = true)
+            if (timedOut) {
+                JsSandboxExecutionResult(
+                    outputText = "Java Runner Timeout Error: Remote execution exceeded ${timeoutMs}ms (5s) limit.",
+                    isSuccess = false,
+                    isTimedOut = true,
+                    sandboxDestroyed = true,
+                    durationMs = elapsed.coerceAtLeast(timeoutMs),
+                    language = RunnerLanguage.JAVA
+                )
+            } else {
+                val (truncated, wasTruncated) = truncateOutputToLimit(
+                    "Java Remote Runner Error: $safeMsg",
+                    maxOutputBytes
+                )
+                JsSandboxExecutionResult(
+                    outputText = truncated,
+                    isSuccess = false,
+                    isTimedOut = false,
+                    isOutputTruncated = wasTruncated,
+                    sandboxDestroyed = true,
+                    durationMs = elapsed,
+                    language = RunnerLanguage.JAVA
+                )
+            }
+        }
+    }
+
+    private fun parseJavaRunnerResponse(body: String, statusCode: Int): Pair<String, Boolean> {
+        val trimmed = body.trim()
+        if (statusCode !in 200..299) {
+            val fields = if (trimmed.startsWith("{") && trimmed.endsWith("}")) parseFlatJsonMap(trimmed) else emptyMap()
+            val errDetail = fields["error"].orEmpty()
+                .ifBlank { fields["message"].orEmpty() }
+                .ifBlank { trimmed }
+            return "Remote Java Runner HTTP $statusCode: ${errDetail.ifBlank { "Request failed" }}" to false
+        }
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val fields = parseFlatJsonMap(trimmed)
+            if (fields.isNotEmpty()) {
+                val stdout = fields["stdout"].orEmpty()
+                val stderr = fields["stderr"].orEmpty()
+                val output = fields["output"].orEmpty()
+                    .ifBlank { fields["result"].orEmpty() }
+                val err = fields["error"].orEmpty()
+                val exitCode = fields["exitCode"]?.toIntOrNull() ?: 0
+                val okField = fields["ok"] ?: fields["success"]
+                val ok = when {
+                    okField != null -> okField.equals("true", ignoreCase = true)
+                    else -> exitCode == 0 && err.isBlank()
+                }
+                val combined = buildString {
+                    if (output.isNotBlank()) append(output)
+                    if (stdout.isNotBlank()) {
+                        if (isNotEmpty()) append("\n")
+                        append(stdout)
+                    }
+                    if (stderr.isNotBlank()) {
+                        if (isNotEmpty()) append("\n")
+                        append(stderr)
+                    }
+                    if (err.isNotBlank()) {
+                        if (isNotEmpty()) append("\n")
+                        append("Error: $err")
+                    }
+                }.ifBlank { trimmed }
+                return combined to ok
+            }
+        }
+        return trimmed to true
+    }
+
+    private fun escapeJsonString(raw: String): String {
+        val sb = StringBuilder(raw.length + 16)
+        for (ch in raw) {
+            when (ch) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                '\u000C' -> sb.append("\\f")
+                else -> {
+                    if (ch < ' ') {
+                        sb.append(String.format("\\u%04x", ch.code))
+                    } else {
+                        sb.append(ch)
+                    }
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun parseFlatJsonMap(json: String): Map<String, String> {
+        runCatching {
+            val obj = JSONObject(json)
+            val result = mutableMapOf<String, String>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (!obj.isNull(k)) {
+                    result[k] = obj.opt(k)?.toString().orEmpty()
+                }
+            }
+            if (result.isNotEmpty()) return result
+        }
+        val result = mutableMapOf<String, String>()
+        var i = 0
+        val n = json.length
+        fun skipWhitespace() {
+            while (i < n && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r' || json[i] == ',' || json[i] == '{' || json[i] == '}')) {
+                i++
+            }
+        }
+        fun readQuotedString(): String {
+            if (i >= n || json[i] != '"') return ""
+            i++ // skip opening quote
+            val start = i
+            while (i < n) {
+                val c = json[i]
+                if (c == '\\') {
+                    i += 2
+                } else if (c == '"') {
+                    val rawSlice = json.substring(start, i)
+                    i++ // skip closing quote
+                    return unescapeJsonString(rawSlice)
+                } else {
+                    i++
+                }
+            }
+            return unescapeJsonString(json.substring(start))
+        }
+        while (i < n) {
+            skipWhitespace()
+            if (i >= n) break
+            if (json[i] != '"') {
+                i++
+                continue
+            }
+            val key = readQuotedString()
+            while (i < n && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r')) i++
+            if (i >= n || json[i] != ':') continue
+            i++ // skip ':'
+            while (i < n && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r')) i++
+            if (i >= n) break
+            if (json[i] == '"') {
+                result[key] = readQuotedString()
+            } else {
+                val valStart = i
+                while (i < n && json[i] != ',' && json[i] != '}' && !json[i].isWhitespace()) {
+                    i++
+                }
+                val literal = json.substring(valStart, i).trim()
+                if (literal != "null" && literal.isNotEmpty()) {
+                    result[key] = literal
+                }
+            }
+        }
+        return result
+    }
+
+    private fun unescapeJsonString(escaped: String): String {
+        val sb = StringBuilder(escaped.length)
+        var i = 0
+        while (i < escaped.length) {
+            val c = escaped[i]
+            if (c == '\\' && i + 1 < escaped.length) {
+                val next = escaped[i + 1]
+                when (next) {
+                    '"' -> { sb.append('"'); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '/' -> { sb.append('/'); i += 2 }
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    'b' -> { sb.append('\b'); i += 2 }
+                    'f' -> { sb.append('\u000C'); i += 2 }
+                    'u' -> {
+                        if (i + 5 < escaped.length) {
+                            val hex = escaped.substring(i + 2, i + 6)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                sb.append(code.toChar())
+                                i += 6
+                                continue
+                            }
+                        }
+                        sb.append(c)
+                        i++
+                    }
+                    else -> { sb.append(next); i += 2 }
+                }
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun extractScriptBlocksFromHtml(html: String): List<String> {
+        val regex = Regex("""(?is)<script\b[^>]*>([\s\S]*?)</script>""")
+        return regex.findAll(html).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
+    }
+
+    private fun stripHtmlTagsToVisibleText(html: String): String {
+        val withoutScriptsAndStyles = html
+            .replace(Regex("""(?is)<script\b[^>]*>[\s\S]*?</script>"""), "")
+            .replace(Regex("""(?is)<style\b[^>]*>[\s\S]*?</style>"""), "")
+            .replace(Regex("""(?is)<head\b[^>]*>[\s\S]*?</head>"""), "")
+        return withoutScriptsAndStyles
+            .replace(Regex("""(?i)<br\s*/?>"""), "\n")
+            .replace(Regex("""(?i)</(p|div|h[1-6]|li|tr)>"""), "\n")
+            .replace(Regex("""<[^>]+>"""), "")
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+    }
+
+    /**
      * Executes JavaScript code in an isolated sandbox with a 5-second timeout,
      * 4 MB memory cap, and 10 KB output truncation.
      *
@@ -194,7 +1207,8 @@ object JsSandboxExecutor {
                 outputText = "Error: No JavaScript code provided to run_code.",
                 isSuccess = false,
                 sandboxDestroyed = true,
-                durationMs = 1L
+                durationMs = 1L,
+                language = RunnerLanguage.JAVASCRIPT
             )
         }
 
@@ -206,7 +1220,8 @@ object JsSandboxExecutor {
                 isSuccess = false,
                 isMemoryExceeded = true,
                 sandboxDestroyed = true,
-                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                language = RunnerLanguage.JAVASCRIPT
             )
         }
 
@@ -215,9 +1230,17 @@ object JsSandboxExecutor {
                 outputText = securityErr,
                 isSuccess = false,
                 sandboxDestroyed = true,
-                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                durationMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                language = RunnerLanguage.JAVASCRIPT
             )
         }
+
+        val previewHtml = buildFullHtmlDocument(
+            html = "<div id=\"app\"></div>",
+            css = "body { font-family: monospace; padding: 12px; }",
+            js = cleanCode,
+            maxMemoryBytes = maxMemoryBytes
+        )
 
         // Try isolated hidden WebView when a real Android Context is provided on a non-stubbed runtime
         if (context != null && isRealAndroidWebViewAvailable()) {
@@ -227,7 +1250,8 @@ object JsSandboxExecutor {
                     code = cleanCode,
                     timeoutMs = timeoutMs,
                     maxMemoryBytes = maxMemoryBytes,
-                    maxOutputBytes = maxOutputBytes
+                    maxOutputBytes = maxOutputBytes,
+                    renderedHtmlDocument = previewHtml
                 )
             }.getOrNull()
             if (webViewResult != null) {
@@ -242,6 +1266,9 @@ object JsSandboxExecutor {
             maxMemoryBytes = maxMemoryBytes,
             maxOutputBytes = maxOutputBytes,
             startMs = startMs
+        ).copy(
+            language = RunnerLanguage.JAVASCRIPT,
+            renderedHtmlDocument = previewHtml
         )
     }
 
@@ -254,11 +1281,11 @@ object JsSandboxExecutor {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun executeInIsolatedHiddenWebView(
+    private suspend fun renderHtmlDocumentInIsolatedWebView(
         context: Context,
-        code: String,
+        fullHtmlDocument: String,
+        language: RunnerLanguage,
         timeoutMs: Long,
-        maxMemoryBytes: Int,
         maxOutputBytes: Int
     ): JsSandboxExecutionResult? {
         val startMs = System.currentTimeMillis()
@@ -291,22 +1318,140 @@ object JsSandboxExecutor {
                         try {
                             val wv = WebView(context.applicationContext)
                             webView = wv
-                            wv.settings.apply {
-                                javaScriptEnabled = true
-                                blockNetworkLoads = true
-                                blockNetworkImage = true
-                                allowFileAccess = false
-                                allowContentAccess = false
-                                @Suppress("DEPRECATION")
-                                allowFileAccessFromFileURLs = false
-                                @Suppress("DEPRECATION")
-                                allowUniversalAccessFromFileURLs = false
-                                domStorageEnabled = false
-                                databaseEnabled = false
-                                cacheMode = WebSettings.LOAD_NO_CACHE
-                                saveFormData = false
-                                setSupportZoom(false)
+                            configureLockedDownWebView(wv)
+                            wv.webViewClient = object : WebViewClient() {
+                                private val finishedOnce = AtomicBoolean(false)
+
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean = true
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    if (!finishedOnce.compareAndSet(false, true)) return
+                                    val inspectScript = """
+                                        (function() {
+                                            var bodyText = (document.body && document.body.innerText) ? document.body.innerText.trim() : "";
+                                            var logs = (window.__sandboxLogs || []).join('\n');
+                                            var errs = (window.__sandboxErrors || []);
+                                            var mem = !!window.__sandboxMemoryExceeded;
+                                            var combined = "";
+                                            if (bodyText) combined += "[Rendered HTML Preview]\n" + bodyText;
+                                            if (logs) {
+                                                if (combined) combined += "\n\n";
+                                                combined += "[Console Output]\n" + logs;
+                                            }
+                                            if (!combined) combined = "[Rendered HTML/CSS/JS document ready in Preview Panel]";
+                                            return JSON.stringify({
+                                                ok: errs.length === 0 && !mem,
+                                                memoryExceeded: mem,
+                                                output: combined
+                                            });
+                                        })();
+                                    """.trimIndent()
+                                    wv.evaluateJavascript(inspectScript) { value ->
+                                        if (cont.isActive) {
+                                            cont.resume(value)
+                                        }
+                                    }
+                                }
                             }
+                            wv.loadDataWithBaseURL(
+                                "about:blank",
+                                fullHtmlDocument,
+                                "text/html",
+                                "UTF-8",
+                                null
+                            )
+                        } catch (t: Throwable) {
+                            if (cont.isActive) {
+                                cont.resume(null)
+                            }
+                        }
+                    }
+                    cont.invokeOnCancellation {
+                        destroyWebViewOnMain()
+                    }
+                }
+            }
+
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            if (rawJsonResult == null) {
+                destroyWebViewOnMain()
+                return JsSandboxExecutionResult(
+                    outputText = "Sandbox Timeout Error: Execution exceeded ${timeoutMs}ms limit and was terminated.",
+                    isSuccess = false,
+                    isTimedOut = true,
+                    sandboxDestroyed = true,
+                    durationMs = elapsed.coerceAtLeast(timeoutMs),
+                    language = language,
+                    renderedHtmlDocument = null
+                )
+            }
+
+            val decoded = decodeEvaluateJavascriptString(rawJsonResult)
+            val parsed = runCatching { JSONObject(decoded) }.getOrNull() ?: return null
+            val ok = parsed.optBoolean("ok", true)
+            val memExceeded = parsed.optBoolean("memoryExceeded", false)
+            val combinedText = parsed.optString("output", "")
+            val (truncatedText, wasTruncated) = truncateOutputToLimit(combinedText, maxOutputBytes)
+
+            JsSandboxExecutionResult(
+                outputText = truncatedText.ifBlank { "(No output)" },
+                isSuccess = ok && !memExceeded,
+                isTimedOut = false,
+                isMemoryExceeded = memExceeded,
+                isOutputTruncated = wasTruncated,
+                sandboxDestroyed = true,
+                durationMs = elapsed,
+                language = language,
+                renderedHtmlDocument = if (memExceeded) null else fullHtmlDocument
+            )
+        } finally {
+            destroyWebViewOnMain()
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun executeInIsolatedHiddenWebView(
+        context: Context,
+        code: String,
+        timeoutMs: Long,
+        maxMemoryBytes: Int,
+        maxOutputBytes: Int,
+        renderedHtmlDocument: String? = null
+    ): JsSandboxExecutionResult? {
+        val startMs = System.currentTimeMillis()
+        val mainHandler = Handler(Looper.getMainLooper())
+        var webView: WebView? = null
+        val destroyed = AtomicBoolean(false)
+
+        fun destroyWebViewOnMain() {
+            if (destroyed.compareAndSet(false, true)) {
+                mainHandler.post {
+                    runCatching {
+                        webView?.apply {
+                            stopLoading()
+                            loadUrl("about:blank")
+                            clearHistory()
+                            clearCache(true)
+                            removeAllViews()
+                            destroy()
+                        }
+                        webView = null
+                    }
+                }
+            }
+        }
+
+        return try {
+            val rawJsonResult = withTimeoutOrNull(timeoutMs) {
+                suspendCancellableCoroutine<String?> { cont ->
+                    mainHandler.post {
+                        try {
+                            val wv = WebView(context.applicationContext)
+                            webView = wv
+                            configureLockedDownWebView(wv)
                             // Strictly NO addJavascriptInterface calls — zero bridges to app data.
                             val wrappedScript = buildWebViewSandboxWrapperScript(code, maxMemoryBytes)
                             wv.evaluateJavascript(wrappedScript) { value ->
@@ -335,7 +1480,8 @@ object JsSandboxExecutor {
                     isSuccess = false,
                     isTimedOut = true,
                     sandboxDestroyed = true,
-                    durationMs = elapsed.coerceAtLeast(timeoutMs)
+                    durationMs = elapsed.coerceAtLeast(timeoutMs),
+                    language = RunnerLanguage.JAVASCRIPT
                 )
             }
 
@@ -355,7 +1501,9 @@ object JsSandboxExecutor {
                 isMemoryExceeded = memExceeded,
                 isOutputTruncated = wasTruncated,
                 sandboxDestroyed = true,
-                durationMs = elapsed
+                durationMs = elapsed,
+                language = RunnerLanguage.JAVASCRIPT,
+                renderedHtmlDocument = if (memExceeded) null else renderedHtmlDocument
             )
         } finally {
             destroyWebViewOnMain()

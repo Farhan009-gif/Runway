@@ -221,7 +221,9 @@ fun ChatWorkspaceScreen(
         strategy: String,
         targetModels: List<String>,
         description: String
-    ) -> Unit = { _, _, _, _, _ -> }
+    ) -> Unit = { _, _, _, _, _ -> },
+    onRunCodeBlock: (language: String, code: String, messageId: String?) -> Unit = { _, _, _ -> },
+    onOpenHtmlPreview: (htmlDocument: String, title: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     DisposableEffect(Unit) {
@@ -718,7 +720,9 @@ fun ChatWorkspaceScreen(
                         onAcceptCheaperModelSuggestion = onAcceptCheaperModelSuggestion,
                         onDismissCheaperModelSuggestion = onDismissCheaperModelSuggestion,
                         onOverrideSpendingLimitOnce = onOverrideSpendingLimitOnce,
-                        onSetContextTrimmingEnabled = onSetContextTrimmingEnabled
+                        onSetContextTrimmingEnabled = onSetContextTrimmingEnabled,
+                        onRunCodeBlock = onRunCodeBlock,
+                        onOpenHtmlPreview = onOpenHtmlPreview
                     )
                 }
             }
@@ -812,7 +816,9 @@ fun ChatWorkspaceScreen(
                     onAcceptCheaperModelSuggestion = onAcceptCheaperModelSuggestion,
                     onDismissCheaperModelSuggestion = onDismissCheaperModelSuggestion,
                     onOverrideSpendingLimitOnce = onOverrideSpendingLimitOnce,
-                    onSetContextTrimmingEnabled = onSetContextTrimmingEnabled
+                    onSetContextTrimmingEnabled = onSetContextTrimmingEnabled,
+                    onRunCodeBlock = onRunCodeBlock,
+                    onOpenHtmlPreview = onOpenHtmlPreview
                 )
             }
         }
@@ -931,7 +937,9 @@ private fun MinimalChatCanvas(
     onAcceptCheaperModelSuggestion: (conversationId: String, modelId: String) -> Unit = { _, _ -> },
     onDismissCheaperModelSuggestion: (conversationId: String) -> Unit = {},
     onOverrideSpendingLimitOnce: () -> Unit = {},
-    onSetContextTrimmingEnabled: (conversationId: String, enabled: Boolean) -> Unit = { _, _ -> }
+    onSetContextTrimmingEnabled: (conversationId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    onRunCodeBlock: (language: String, code: String, messageId: String?) -> Unit = { _, _, _ -> },
+    onOpenHtmlPreview: (htmlDocument: String, title: String) -> Unit = { _, _ -> }
 ) {
     val listState = rememberLazyListState()
 
@@ -1430,7 +1438,11 @@ private fun MinimalChatCanvas(
                                     onEditUserMessage = { onStartEditMessage(msg) },
                                     onRegenerate = onRegenerateLast,
                                     onCopiedToast = onCopiedToast,
-                                    onPushToGitHub = onPushContentToGitHub
+                                    onPushToGitHub = onPushContentToGitHub,
+                                    onRunCodeBlock = { lang, code ->
+                                        onRunCodeBlock(lang, code, msg.id)
+                                    },
+                                    onOpenHtmlPreview = onOpenHtmlPreview
                                 )
                             }
 
@@ -1442,7 +1454,8 @@ private fun MinimalChatCanvas(
                                     combos = uiState.omniRouteCombos,
                                     estimatedMessageIds = uiState.estimatedTokenMessageIds,
                                     cachedTokensByMessageId = uiState.cachedTokensByMessageId,
-                                    onCopiedToast = onCopiedToast
+                                    onCopiedToast = onCopiedToast,
+                                    onRunCodeBlock = onRunCodeBlock
                                 )
                             }
                         }
@@ -1900,7 +1913,9 @@ private fun MinimalChatMessageItem(
     onEditUserMessage: () -> Unit,
     onRegenerate: () -> Unit,
     onCopiedToast: (String) -> Unit,
-    onPushToGitHub: (title: String, fileName: String, content: String) -> Unit
+    onPushToGitHub: (title: String, fileName: String, content: String) -> Unit,
+    onRunCodeBlock: ((language: String, code: String) -> Unit)? = null,
+    onOpenHtmlPreview: ((htmlDocument: String, title: String) -> Unit)? = null
 ) {
     val clipboard = LocalClipboardManager.current
     val isUser = message.role.equals("user", ignoreCase = true)
@@ -2029,7 +2044,10 @@ private fun MinimalChatMessageItem(
 
                 if (toolLogs.isNotEmpty()) {
                     toolLogs.forEach { log ->
-                        CollapsibleToolCallCard(log = log)
+                        CollapsibleToolCallCard(
+                            log = log,
+                            onOpenHtmlPreview = onOpenHtmlPreview
+                        )
                     }
                 }
 
@@ -2058,7 +2076,8 @@ private fun MinimalChatMessageItem(
                 com.example.ui.components.RunwayRichMarkdownRenderer(
                     content = if (message.content.isBlank() && message.isStreaming) "…" else message.content,
                     isStreaming = message.isStreaming,
-                    onCopiedToast = onCopiedToast
+                    onCopiedToast = onCopiedToast,
+                    onRunCodeBlock = onRunCodeBlock
                 )
 
                 if (message.isStreaming && !activeToolLoopStatus.isNullOrBlank()) {
@@ -2204,7 +2223,8 @@ private fun MinimalComparisonRow(
     combos: List<OmniRouteComboDefinition> = emptyList(),
     estimatedMessageIds: Set<String> = emptySet(),
     cachedTokensByMessageId: Map<String, Int> = emptyMap(),
-    onCopiedToast: (String) -> Unit
+    onCopiedToast: (String) -> Unit,
+    onRunCodeBlock: (language: String, code: String, messageId: String?) -> Unit = { _, _, _ -> }
 ) {
     val clipboard = LocalClipboardManager.current
     Row(
@@ -2275,7 +2295,10 @@ private fun MinimalComparisonRow(
                 com.example.ui.components.RunwayRichMarkdownRenderer(
                     content = if (resp.content.isBlank() && resp.isStreaming) "…" else resp.content,
                     isStreaming = resp.isStreaming,
-                    onCopiedToast = onCopiedToast
+                    onCopiedToast = onCopiedToast,
+                    onRunCodeBlock = { lang, code ->
+                        onRunCodeBlock(lang, code, resp.id)
+                    }
                 )
                 if (!resp.isStreaming && resp.content.isNotBlank()) {
                     val cachedTok = cachedTokensByMessageId[resp.id] ?: 0

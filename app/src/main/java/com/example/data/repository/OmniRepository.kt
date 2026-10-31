@@ -2727,11 +2727,13 @@ class OmniRepository(
         messageId: String,
         argumentsJson: String
     ): ToolCallLogEntity = withContext(Dispatchers.IO) {
-        val code = com.example.data.mcp.JsSandboxExecutor.extractJsCodeFromArguments(argumentsJson)
-            .ifBlank { argumentsJson }
-        val sandboxResult = com.example.data.mcp.JsSandboxExecutor.executeSandboxedJs(
+        val javaRunnerUrl = secretVault.getJavaRunnerUrl()
+        val javaRunnerKey = secretVault.getJavaRunnerKey()
+        val sandboxResult = com.example.data.mcp.JsSandboxExecutor.executeRunnerFromArguments(
             context = context,
-            code = code
+            argumentsJson = argumentsJson,
+            javaRunnerUrl = javaRunnerUrl,
+            javaRunnerApiKey = javaRunnerKey
         )
         val logEntity = ToolCallLogEntity(
             id = "tlog_${UUID.randomUUID().toString().take(10)}",

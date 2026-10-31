@@ -430,6 +430,7 @@ fun RunwayRichMarkdownRenderer(
     content: String,
     isStreaming: Boolean = false,
     onCopiedToast: (String) -> Unit = {},
+    onRunCodeBlock: ((language: String, code: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val blocks = remember(content, isStreaming) {
@@ -596,7 +597,8 @@ fun RunwayRichMarkdownRenderer(
                                 language = block.language,
                                 code = block.code,
                                 isIncompleteStream = block.isIncompleteStream,
-                                onCopiedToast = onCopiedToast
+                                onCopiedToast = onCopiedToast,
+                                onRunCodeBlock = onRunCodeBlock
                             )
                         }
 
@@ -982,12 +984,18 @@ fun RunwaySyntaxCodeBlock(
     code: String,
     isIncompleteStream: Boolean = false,
     onCopiedToast: (String) -> Unit = {},
+    onRunCodeBlock: ((language: String, code: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var wrapLines by rememberSaveable { mutableStateOf(false) }
     var isCopied by remember { mutableStateOf(false) }
+    val canRunCode = remember(language, isIncompleteStream, onRunCodeBlock) {
+        !isIncompleteStream &&
+            onRunCodeBlock != null &&
+            com.example.data.mcp.JsSandboxExecutor.isSupportedRunnerLanguage(language)
+    }
 
     val allLines = remember(code) { code.lines() }
     val totalLineCount = allLines.size
@@ -1020,7 +1028,7 @@ fun RunwaySyntaxCodeBlock(
             .testTag("rich_code_block")
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Top bar: language label + Wrap toggle + Copy button with "Copied" confirmation
+            // Top bar: language label + Run button (HTML/CSS/JS/Java) + Wrap toggle + Copy button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1054,6 +1062,29 @@ fun RunwaySyntaxCodeBlock(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    if (canRunCode && onRunCodeBlock != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .clickable { onRunCodeBlock(language, code) }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("code_block_run_button")
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Play,
+                                contentDescription = "Run code",
+                                tint = SoftIndigo,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Run",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = SoftIndigo
+                            )
+                        }
+                    }
                     // Line-wrap toggle
                     Text(
                         text = if (wrapLines) "Wrap: On" else "Wrap",

@@ -79,6 +79,7 @@ import com.example.ui.components.CompareTargetsBottomSheet
 import com.example.ui.components.ConversationSkillsAndToolsSheet
 import com.example.ui.components.ExportPreviewDialog
 import com.example.ui.components.GitHubPushDialog
+import com.example.ui.components.HtmlCssJsPreviewPanelSheet
 import com.example.ui.components.LucideIcons
 import com.example.ui.components.McpSafetyApprovalSheet
 import com.example.ui.components.MinimalButton
@@ -679,6 +680,14 @@ private fun OmniStudioRoot(
         )
     }
 
+    uiState.activeHtmlPreviewDocument?.let { previewDoc ->
+        HtmlCssJsPreviewPanelSheet(
+            htmlDocument = previewDoc,
+            title = uiState.activeHtmlPreviewTitle,
+            onDismiss = viewModel::dismissHtmlPreviewPanel
+        )
+    }
+
     uiState.pendingCleartextApproval?.let { pending ->
         CleartextHostWarningDialog(
             pending = pending,
@@ -977,7 +986,11 @@ private fun OmniStudioRoot(
                                         selectInStudio = true,
                                         additionalProviderId = activeConversation?.providerInstanceId
                                     )
-                                }
+                                },
+                                onRunCodeBlock = { lang, code, msgId ->
+                                    viewModel.requestRunCodeBlockWithConfirmation(lang, code, msgId.orEmpty())
+                                },
+                                onOpenHtmlPreview = viewModel::openHtmlPreviewPanel
                             )
                         }
 
@@ -1337,7 +1350,9 @@ private fun OmniStudioRoot(
                                                     onExportSettings = viewModel::prepareSettingsExport,
                                                     onImportSettings = viewModel::importSettingsJson,
                                                     onClearAllData = viewModel::clearAllWorkspaceData,
-                                                    onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                                    onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                                    onSaveJavaRunnerSettings = viewModel::saveJavaRunnerSettings,
+                                                    onClearJavaRunnerKey = viewModel::clearJavaRunnerKey
                                                 )
                                             }
                                         }
@@ -1352,7 +1367,9 @@ private fun OmniStudioRoot(
                                                 onOpenOnboardingSheet = { viewModel.setShowOnboardingSheet(true) },
                                                 onExportSettings = viewModel::prepareSettingsExport,
                                                 onClearAllData = viewModel::clearAllWorkspaceData,
-                                                onOpenConnectors = { viewModel.openConnectorsScreen(null) }
+                                                onOpenConnectors = { viewModel.openConnectorsScreen(null) },
+                                                onSaveJavaRunnerSettings = viewModel::saveJavaRunnerSettings,
+                                                onClearJavaRunnerKey = viewModel::clearJavaRunnerKey
                                             )
                                         }
                                     }

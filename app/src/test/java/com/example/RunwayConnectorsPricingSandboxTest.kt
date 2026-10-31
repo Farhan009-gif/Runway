@@ -6,9 +6,12 @@ import com.example.data.local.McpToolEntity
 import com.example.data.local.McpTransportType
 import com.example.data.mcp.ConnectorApprovalPolicy
 import com.example.data.mcp.JsSandboxExecutor
+import com.example.data.mcp.RunnerLanguage
 import com.example.data.mcp.ToolApprovalChoice
 import com.example.data.mcp.ToolExecutionGate
 import com.example.data.provider.ModelPriceTable
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -444,4 +447,185 @@ class RunwayConnectorsPricingSandboxTest {
         assertFalse(result.isSuccess)
         assertTrue(result.outputText.contains("Security Error", ignoreCase = true))
     }
+
+    @Test
+    fun htmlCssJsSandbox_rendersFullHtmlDocumentWithCssAndJs_andEnforcesFourMegabyteLimit() = runBlocking {
+        val html = "<div class='card'><h1>Hello Preview</h1></div>"
+        val css = ".card { color: #4F46E5; font-weight: bold; }"
+        val js = "console.log('Rendered preview widget: ' + (20 + 22));"
+
+        val result = JsSandboxExecutor.executeSandboxedHtmlCssJs(
+            context = null,
+            html = html,
+            css = css,
+            js = js
+        )
+        assertTrue(result.isSuccess)
+        assertEquals(RunnerLanguage.HTML, result.language)
+        assertNotNull(result.renderedHtmlDocument)
+        assertTrue(result.renderedHtmlDocument!!.contains("<!DOCTYPE html>"))
+        assertTrue(result.renderedHtmlDocument!!.contains(css))
+        assertTrue(result.renderedHtmlDocument!!.contains(html))
+        assertTrue(result.outputText.contains("Rendered preview widget: 42"))
+        assertTrue(result.sandboxDestroyed)
+
+        // Verify 4 MB document limit enforcement
+        val oversizedHtml = "<div>" + "A".repeat(JsSandboxExecutor.MAX_MEMORY_BYTES + 1024) + "</div>"
+        val overLimitResult = JsSandboxExecutor.executeSandboxedHtmlCssJs(
+            context = null,
+            html = oversizedHtml,
+            css = "",
+            js = ""
+        )
+        assertFalse(overLimitResult.isSuccess)
+        assertTrue(overLimitResult.isMemoryExceeded)
+        assertTrue(overLimitResult.sandboxDestroyed)
+    }
+
+    @Test
+    fun javaRemoteRunner_whenNoRunnerConfigured_returnsClearSetupInstructions() = runBlocking {
+        val result = JsSandboxExecutor.executeRemoteJava(
+            code = "public class Main { public static void main(String[] args) { System.out.println(\"Hi\"); } }",
+            runnerUrl = "",
+            apiKey = ""
+        )
+        assertFalse(result.isSuccess)
+        assertEquals(RunnerLanguage.JAVA, result.language)
+        assertTrue(result.outputText.contains("No Java remote runner is set up"))
+        assertTrue(result.outputText.contains("Settings"))
+    }
+
+    @Test
+    fun javaRemoteRunner_enforcesTimeoutAndTenKilobyteOutputCap_andNeverLeaksSecretKey() = runBlocking {
+        val secretApiKey = "secret_java_runner_vault_key_998877"
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.createContext("/ok-huge") { exchange ->
+                val authHeader = exchange.requestHeaders.getFirst("Authorization").orEmpty()
+                assertEquals("Bearer $secretApiKey", authHeader)
+                // Return more than 10 KB of output plus echo the secret key to verify redaction + 10 KB cap
+                val hugeStdout = "Line output data 1234567890\\n".repeat(600) + " leaked=$secretApiKey"
+                val jsonBytes = """{"stdout":"$hugeStdout","exitCode":0}""".toByteArray(Charsets.UTF_8)
+                exchange.sendResponseHeaders(200, jsonBytes.size.toLong())
+                exchange.responseBody.use { it.write(jsonBytes) }
+            }
+            server.createContext("/slow") { exchange ->
+                try {
+                    Thread.sleep(1500L)
+                } catch (_: InterruptedException) {
+                }
+                val bytes = """{"stdout":"done"}""".toByteArray(Charsets.UTF_8)
+                runCatching {
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                }
+            }
+            server.start()
+            val port = server.address.port
+
+            // 1. Test 10 KB output cap & key redaction
+            val capResult = JsSandboxExecutor.executeRemoteJava(
+                code = "public class Main { public static void main(String[] args) {} }",
+                runnerUrl = "http://127.0.0.1:$port/ok-huge",
+                apiKey = secretApiKey,
+                timeoutMs = 5_000L,
+                maxOutputBytes = JsSandboxExecutor.MAX_OUTPUT_BYTES
+            )
+            assertTrue(capResult.isSuccess)
+            assertTrue(capResult.isOutputTruncated)
+            assertTrue(capResult.outputText.toByteArray(Charsets.UTF_8).size <= JsSandboxExecutor.MAX_OUTPUT_BYTES)
+            assertFalse(capResult.outputText.contains(secretApiKey))
+
+            // 2. Test timeout enforcement
+            val timeoutResult = JsSandboxExecutor.executeRemoteJava(
+                code = "public class Main { public static void main(String[] args) { while(true){} } }",
+                runnerUrl = "http://127.0.0.1:$port/slow",
+                apiKey = secretApiKey,
+                timeoutMs = 300L
+            )
+            assertFalse(timeoutResult.isSuccess)
+            assertTrue(timeoutResult.isTimedOut)
+            assertFalse(timeoutResult.outputText.contains(secretApiKey))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun codeRunner_confirmationStep_requiresConfirmationBeforeEveryRun_andSupportsHtmlCssJsAndJavaOnly() {
+        // Never run code automatically: confirmation is required before every run
+        assertTrue(JsSandboxExecutor.requiresUserConfirmationBeforeEveryRun())
+
+        // Supported languages: HTML, CSS, JavaScript, Java. Python is NOT supported.
+        assertTrue(JsSandboxExecutor.isSupportedRunnerLanguage("html"))
+        assertTrue(JsSandboxExecutor.isSupportedRunnerLanguage("css"))
+        assertTrue(JsSandboxExecutor.isSupportedRunnerLanguage("javascript"))
+        assertTrue(JsSandboxExecutor.isSupportedRunnerLanguage("js"))
+        assertTrue(JsSandboxExecutor.isSupportedRunnerLanguage("java"))
+        assertFalse(JsSandboxExecutor.isSupportedRunnerLanguage("python"))
+        assertFalse(JsSandboxExecutor.isSupportedRunnerLanguage("py"))
+
+        // Confirmation details for HTML/CSS/JS include language, code, and 5-second time limit
+        val webArgsJson = JsSandboxExecutor.buildRunCodeArgumentsJson(
+            language = "html",
+            code = "<h1>Hello</h1>",
+            css = "h1 { color: red; }",
+            js = "console.log('ready');"
+        )
+        val webConfirm = JsSandboxExecutor.buildRunConfirmationDetails(webArgsJson)
+        assertEquals(RunnerLanguage.HTML, webConfirm.language)
+        assertEquals("HTML / CSS / JavaScript", webConfirm.languageLabel)
+        assertEquals(5, webConfirm.timeLimitSeconds)
+        assertEquals(5_000L, webConfirm.timeLimitMs)
+        assertEquals(4 * 1024 * 1024, webConfirm.memoryLimitBytes)
+        assertEquals(10 * 1024, webConfirm.outputCapBytes)
+        assertTrue(webConfirm.code.contains("<h1>Hello</h1>"))
+        assertTrue(webConfirm.code.contains("h1 { color: red; }"))
+        assertTrue(webConfirm.code.contains("console.log('ready');"))
+        assertFalse(webConfirm.isRemoteExecution)
+        assertNull(webConfirm.remoteServerNote)
+
+        // Confirmation details for Java include language, code, 5-second time limit, and remote server note
+        val javaCode = "public class Main { public static void main(String[] args) { System.out.println(42); } }"
+        val javaArgsJson = JsSandboxExecutor.buildRunCodeArgumentsJson(
+            language = "java",
+            code = javaCode
+        )
+        val javaConfirm = JsSandboxExecutor.buildRunConfirmationDetails(javaArgsJson)
+        assertEquals(RunnerLanguage.JAVA, javaConfirm.language)
+        assertEquals("Java", javaConfirm.languageLabel)
+        assertEquals(javaCode, javaConfirm.code)
+        assertEquals(5, javaConfirm.timeLimitSeconds)
+        assertEquals(5_000L, javaConfirm.timeLimitMs)
+        assertEquals(10 * 1024, javaConfirm.outputCapBytes)
+        assertTrue(javaConfirm.isRemoteExecution)
+        assertEquals(JsSandboxExecutor.JAVA_REMOTE_SERVER_NOTE, javaConfirm.remoteServerNote)
+        assertTrue(javaConfirm.remoteServerNote!!.contains("remote server"))
+        assertTrue(javaConfirm.remoteServerNote!!.contains("leaves the device"))
+    }
+
+    @Test
+    fun webViewPreviewer_combinesHtmlCssJsStrings_andEnforcesFourMegabyteLimit() {
+        val payload = com.example.ui.components.WebViewPreviewerSecurity.preparePreviewPayload(
+            html = "<main id='preview'>Hello WebViewPreviewer</main>",
+            css = "#preview { color: #10B981; }",
+            js = "console.log('preview active');"
+        )
+        assertFalse(payload.isMemoryLimitExceeded)
+        assertNull(payload.errorMessage)
+        assertTrue(payload.fullHtmlDocument.contains("<main id='preview'>Hello WebViewPreviewer</main>"))
+        assertTrue(payload.fullHtmlDocument.contains("#preview { color: #10B981; }"))
+        assertTrue(payload.fullHtmlDocument.contains("console.log('preview active');"))
+        assertTrue(payload.fullHtmlDocument.contains("window.__sandboxMaxBytes"))
+
+        val oversizedPayload = com.example.ui.components.WebViewPreviewerSecurity.preparePreviewPayload(
+            html = "<p>" + "X".repeat(JsSandboxExecutor.MAX_MEMORY_BYTES + 512) + "</p>",
+            css = "",
+            js = ""
+        )
+        assertTrue(oversizedPayload.isMemoryLimitExceeded)
+        assertNotNull(oversizedPayload.errorMessage)
+        assertTrue(oversizedPayload.fullHtmlDocument.isEmpty())
+    }
 }
+

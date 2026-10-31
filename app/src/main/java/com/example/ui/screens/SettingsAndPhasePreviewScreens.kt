@@ -116,7 +116,9 @@ fun SettingsWorkspaceScreen(
     onExportSettings: (includeKeys: Boolean) -> Unit,
     onImportSettings: (String) -> Unit,
     onClearAllData: () -> Unit,
-    onOpenConnectors: () -> Unit = {}
+    onOpenConnectors: () -> Unit = {},
+    onSaveJavaRunnerSettings: (url: String, rawKey: String?) -> Unit = { _, _ -> },
+    onClearJavaRunnerKey: () -> Unit = {}
 ) {
     MinimalSettingsAndThemeScreen(
         uiState = uiState,
@@ -128,7 +130,9 @@ fun SettingsWorkspaceScreen(
         onOpenOnboardingSheet = onOpenOnboardingSheet,
         onExportSettings = onExportSettings,
         onClearAllData = onClearAllData,
-        onOpenConnectors = onOpenConnectors
+        onOpenConnectors = onOpenConnectors,
+        onSaveJavaRunnerSettings = onSaveJavaRunnerSettings,
+        onClearJavaRunnerKey = onClearJavaRunnerKey
     )
 }
 
@@ -147,9 +151,13 @@ fun MinimalSettingsAndThemeScreen(
     onExportSettings: (includeKeys: Boolean) -> Unit,
     onClearAllData: () -> Unit,
     onOpenConnectors: () -> Unit = {},
+    onSaveJavaRunnerSettings: (url: String, rawKey: String?) -> Unit = { _, _ -> },
+    onClearJavaRunnerKey: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isLightMode = uiState.themeMode.equals("LIGHT", ignoreCase = true)
+    var javaRunnerUrlDraft by rememberSaveable(uiState.javaRunnerUrl) { mutableStateOf(uiState.javaRunnerUrl) }
+    var javaRunnerKeyDraft by rememberSaveable { mutableStateOf("") }
 
     LazyColumn(
         modifier = modifier
@@ -386,6 +394,115 @@ fun MinimalSettingsAndThemeScreen(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp)
                     )
+                }
+            }
+        }
+
+        // Code Runner (Java Remote Runner) Card
+        item {
+            MinimalSectionHeader(title = "Code Runner (Java Remote Runner)")
+            Spacer(modifier = Modifier.height(8.dp))
+            MinimalCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_java_runner_card")
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Code,
+                                contentDescription = "Java Remote Runner",
+                                tint = SoftIndigo,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Remote Java Runner",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Java runs on a remote server (5s timeout, 10 KB output cap). HTML, CSS, and JS run locally in a locked-down WebView.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        MinimalStatusDot(isConnected = uiState.javaRunnerUrl.isNotBlank())
+                    }
+
+                    OutlinedTextField(
+                        value = javaRunnerUrlDraft,
+                        onValueChange = { javaRunnerUrlDraft = it },
+                        label = { Text("Runner URL (https://...)") },
+                        placeholder = { Text("https://runner.example.com/execute") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("java_runner_url_input")
+                    )
+
+                    OutlinedTextField(
+                        value = javaRunnerKeyDraft,
+                        onValueChange = { javaRunnerKeyDraft = it },
+                        label = {
+                            Text(
+                                if (uiState.maskedJavaRunnerKey != null) {
+                                    "Optional Runner Key (Stored: ${uiState.maskedJavaRunnerKey})"
+                                } else {
+                                    "Optional Runner Key (Stored in encrypted vault)"
+                                }
+                            )
+                        },
+                        placeholder = { Text("Leave blank to keep existing key") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("java_runner_key_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MinimalButton(
+                            text = "Save Runner",
+                            onClick = {
+                                onSaveJavaRunnerSettings(
+                                    javaRunnerUrlDraft,
+                                    javaRunnerKeyDraft.takeIf { it.isNotBlank() }
+                                )
+                                javaRunnerKeyDraft = ""
+                            },
+                            filled = true,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("save_java_runner_settings_button")
+                        )
+                        if (uiState.maskedJavaRunnerKey != null) {
+                            MinimalButton(
+                                text = "Clear Key",
+                                onClick = {
+                                    javaRunnerKeyDraft = ""
+                                    onClearJavaRunnerKey()
+                                },
+                                filled = false,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("clear_java_runner_key_button")
+                            )
+                        }
+                    }
                 }
             }
         }

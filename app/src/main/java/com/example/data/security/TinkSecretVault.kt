@@ -95,6 +95,7 @@ class TinkSecretVault(private val context: Context) {
         const val INTEGRATION_YOUTUBE_CLIENT_ID = "integration_youtube_oauth_client_id"
         const val INTEGRATION_YOUTUBE_ACCESS_TOKEN_ID = "integration_youtube_access_token"
         const val INTEGRATION_YOUTUBE_REFRESH_TOKEN_ID = "integration_youtube_refresh_token"
+        const val JAVA_RUNNER_SECRET_ID = "runway_java_runner_api_key"
         private const val MCP_SERVER_TOKEN_PREFIX = "mcp_server_token_"
 
         fun mcpServerSecretId(serverId: String): String = "$MCP_SERVER_TOKEN_PREFIX$serverId"
@@ -123,6 +124,7 @@ class TinkSecretVault(private val context: Context) {
         private val KEY_READ_REPLIES_ALOUD = booleanPreferencesKey("runway_read_replies_aloud")
         private val KEY_PROVIDER_SPENDING_LIMITS_JSON = stringPreferencesKey("runway_provider_spending_limits_json")
         private val KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE = booleanPreferencesKey("runway_has_seen_file_attachment_notice")
+        private val KEY_JAVA_RUNNER_URL = stringPreferencesKey("runway_java_runner_url")
 
         private fun apiKeyPreferenceKey(providerInstanceId: String) =
             stringPreferencesKey("$ENC_KEY_PREFIX$providerInstanceId")
@@ -192,6 +194,10 @@ class TinkSecretVault(private val context: Context) {
         prefs[KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE] ?: false
     }
 
+    val javaRunnerUrlFlow: Flow<String> = context.omniDataStore.data.map { prefs ->
+        prefs[KEY_JAVA_RUNNER_URL] ?: ""
+    }
+
     val runwayMigrationVerifiedFlow: Flow<Boolean> = context.omniDataStore.data.map { prefs ->
         prefs[KEY_RUNWAY_MIGRATION_VERIFIED] ?: false
     }
@@ -224,6 +230,37 @@ class TinkSecretVault(private val context: Context) {
         context.omniDataStore.edit { prefs ->
             prefs[KEY_HAS_SEEN_FILE_ATTACHMENT_NOTICE] = seen
         }
+    }
+
+    suspend fun getJavaRunnerUrl(): String {
+        return context.omniDataStore.data.first()[KEY_JAVA_RUNNER_URL] ?: ""
+    }
+
+    suspend fun setJavaRunnerUrl(url: String) {
+        val trimmed = url.trim()
+        context.omniDataStore.edit { prefs ->
+            if (trimmed.isEmpty()) {
+                prefs.remove(KEY_JAVA_RUNNER_URL)
+            } else {
+                prefs[KEY_JAVA_RUNNER_URL] = trimmed
+            }
+        }
+    }
+
+    suspend fun saveJavaRunnerKey(rawKey: String) {
+        saveApiKey(JAVA_RUNNER_SECRET_ID, rawKey)
+    }
+
+    suspend fun getJavaRunnerKey(): String {
+        return getApiKey(JAVA_RUNNER_SECRET_ID)
+    }
+
+    suspend fun getMaskedJavaRunnerKey(): String {
+        return getMaskedApiKey(JAVA_RUNNER_SECRET_ID)
+    }
+
+    suspend fun clearJavaRunnerKey() {
+        deleteApiKey(JAVA_RUNNER_SECRET_ID)
     }
 
     suspend fun getRunwayPrefString(keyName: String, defaultValue: String = ""): String {

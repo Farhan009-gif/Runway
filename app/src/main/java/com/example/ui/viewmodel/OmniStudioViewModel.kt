@@ -290,7 +290,12 @@ data class OmniUiState(
     val cachedTokensByMessageId: Map<String, Int> = emptyMap(),
     // 7. Smart Context Trimming
     val contextTrimmingEnabledByChatId: Map<String, Boolean> = emptyMap(),
-    val contextSummaryByChatId: Map<String, String> = emptyMap()
+    val contextSummaryByChatId: Map<String, String> = emptyMap(),
+    // 8. Code Runner: HTML/CSS/JS Preview Panel & Java Remote Runner Settings
+    val javaRunnerUrl: String = "",
+    val maskedJavaRunnerKey: String = "",
+    val activeHtmlPreviewDocument: String? = null,
+    val activeHtmlPreviewTitle: String = ""
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -423,19 +428,29 @@ class OmniStudioViewModel(
             combine(
                 repository.secretVault.readRepliesAloudFlow,
                 repository.secretVault.providerSpendingLimitsJsonFlow,
-                repository.secretVault.hasSeenFileAttachmentNoticeFlow
-            ) { readAloud, limitsJson, seenNotice ->
-                Triple(
+                repository.secretVault.hasSeenFileAttachmentNoticeFlow,
+                repository.secretVault.javaRunnerUrlFlow
+            ) { readAloud, limitsJson, seenNotice, javaUrl ->
+                 listOf(
                     readAloud,
                     com.example.data.provider.ProviderSpendingLimitEvaluator.parseLimitsJson(limitsJson),
-                    seenNotice
+                    seenNotice,
+                    javaUrl
                 )
-            }.collect { (readAloud, limitsMap, seenNotice) ->
+            }.collect { values ->
+                val readAloud = values[0] as Boolean
+                @Suppress("UNCHECKED_CAST")
+                val limitsMap = values[1] as Map<String, Double>
+                val seenNotice = values[2] as Boolean
+                val javaUrl = values[3] as String
+                val maskedJavaKey = repository.secretVault.getMaskedJavaRunnerKey()
                 _uiState.update { state ->
                     state.copy(
                         readRepliesAloud = readAloud,
                         providerMonthlyLimitsUsd = limitsMap,
-                        hasSeenFileAttachmentNotice = seenNotice
+                        hasSeenFileAttachmentNotice = seenNotice,
+                        javaRunnerUrl = javaUrl,
+                        maskedJavaRunnerKey = maskedJavaKey
                     )
                 }
             }
@@ -3744,31 +3759,29 @@ class OmniStudioViewModel(
                 if (isRunCodeCall) {
                     val synthServer = com.example.data.mcp.JsSandboxExecutor.buildSyntheticServerEntity()
                     val synthTool = com.example.data.mcp.JsSandboxExecutor.buildSyntheticToolEntity()
-                    var approved = conv.id in conversationAllowedCodeExecutionIds
-                    if (!approved) {
-                        val approvalReq = PendingToolApprovalRequest(
-                            server = synthServer,
-                            tool = synthTool,
-                            callRequest = toolCall,
-                            iterationIndex = iteration,
-                            maxIterations = if (isUnlimited) 51 else maxIterations
+                    val confirmDetails = com.example.data.mcp.JsSandboxExecutor.buildRunConfirmationDetails(
+                        toolCall.argumentsJson
+                    )
+                    // Safety rule: Never run code automatically. Always show the Run confirmation sheet before every run.
+                    val approvalReq = PendingToolApprovalRequest(
+                        server = synthServer,
+                        tool = synthTool,
+                        callRequest = toolCall,
+                        iterationIndex = iteration,
+                        maxIterations = if (isUnlimited) 51 else maxIterations
+                    )
+                    _uiState.update {
+                        it.copy(
+                            pendingToolApproval = approvalReq,
+                            activeToolLoopStatus = "$turnCounter • Awaiting confirmation to run ${confirmDetails.languageLabel} (${confirmDetails.timeLimitLabel} limit)"
                         )
-                        _uiState.update {
-                            it.copy(
-                                pendingToolApproval = approvalReq,
-                                activeToolLoopStatus = "$turnCounter • Awaiting approval for JavaScript Sandbox"
-                            )
-                        }
-                        val decision = approvalReq.decisionDeferred.await()
-                        _uiState.update { it.copy(pendingToolApproval = null) }
-                        when (decision) {
-                            ToolApprovalDecision.APPROVE_ONCE -> approved = true
-                            ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY -> {
-                                approved = true
-                                conversationAllowedCodeExecutionIds.add(conv.id)
-                            }
-                            ToolApprovalDecision.DENY -> approved = false
-                        }
+                    }
+                    val decision = approvalReq.decisionDeferred.await()
+                    _uiState.update { it.copy(pendingToolApproval = null) }
+                    val approved = when (decision) {
+                        ToolApprovalDecision.APPROVE_ONCE,
+                        ToolApprovalDecision.APPROVE_CONVERSATION_READ_ONLY -> true
+                        ToolApprovalDecision.DENY -> false
                     }
 
                     if (!approved) {
@@ -3799,7 +3812,7 @@ class OmniStudioViewModel(
 
                     _uiState.update {
                         it.copy(
-                            activeToolLoopStatus = "$turnCounter • Running JavaScript in isolated sandbox…"
+                            activeToolLoopStatus = "$turnCounter • Running ${confirmDetails.languageLabel}…"
                         )
                     }
                     val logEntry = repository.executeSandboxedCodeAndLog(
@@ -3809,7 +3822,7 @@ class OmniStudioViewModel(
                     )
                     val statusLabel = if (logEntry.isSuccess) "SUCCESS" else "ERROR"
                     val toolResultForModel = buildString {
-                        appendLine("[Sandboxed JavaScript Result ($statusLabel)]")
+                        appendLine("[${confirmDetails.languageLabel} Runner Result ($statusLabel)]")
                         appendLine(logEntry.resultText)
                     }
                     workingPayloadMessages.add(
@@ -5538,6 +5551,136 @@ class OmniStudioViewModel(
                 contextSummaryByChatId = updatedSummaries,
                 statusToast = if (enabled) "Smart context trimming enabled for this chat" else "Smart context trimming turned off for this chat"
             )
+        }
+    }
+
+    fun saveJavaRunnerSettings(url: String, rawKey: String?) {
+        viewModelScope.launch {
+            repository.secretVault.setJavaRunnerUrl(url)
+            if (rawKey != null && rawKey.isNotBlank()) {
+                repository.secretVault.saveJavaRunnerKey(rawKey)
+            }
+            val masked = repository.secretVault.getMaskedJavaRunnerKey()
+            _uiState.update {
+                it.copy(
+                    javaRunnerUrl = url.trim(),
+                    maskedJavaRunnerKey = masked,
+                    statusToast = if (url.isBlank()) "Java remote runner cleared" else "Saved Java remote runner settings"
+                )
+            }
+        }
+    }
+
+    fun clearJavaRunnerKey() {
+        viewModelScope.launch {
+            repository.secretVault.clearJavaRunnerKey()
+            _uiState.update {
+                it.copy(
+                    maskedJavaRunnerKey = "",
+                    statusToast = "Cleared Java runner key from encrypted vault"
+                )
+            }
+        }
+    }
+
+    fun openHtmlPreviewPanel(htmlDocument: String, title: String = "HTML / CSS / JS Preview") {
+        _uiState.update {
+            it.copy(
+                activeHtmlPreviewDocument = htmlDocument,
+                activeHtmlPreviewTitle = title
+            )
+        }
+    }
+
+    fun dismissHtmlPreviewPanel() {
+        _uiState.update {
+            it.copy(
+                activeHtmlPreviewDocument = null,
+                activeHtmlPreviewTitle = ""
+            )
+        }
+    }
+
+    /**
+     * Triggered when the user taps "Run" on an HTML, CSS, JavaScript, or Java code block.
+     * Shows the Run confirmation sheet first (never runs automatically) and executes only after confirmation.
+     */
+    fun requestRunCodeBlockWithConfirmation(
+        language: String,
+        code: String,
+        messageId: String = ""
+    ) {
+        if (!com.example.data.mcp.JsSandboxExecutor.isSupportedRunnerLanguage(language)) {
+            _uiState.update {
+                it.copy(statusToast = "Unsupported language '$language'. Supported: HTML, CSS, JavaScript, Java.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            val convId = _uiState.value.activeConversationId ?: conversations.value.firstOrNull()?.id ?: "default_conv"
+            val argsJson = com.example.data.mcp.JsSandboxExecutor.buildRunCodeArgumentsJson(
+                language = language,
+                code = code
+            )
+            val synthServer = com.example.data.mcp.JsSandboxExecutor.buildSyntheticServerEntity()
+            val synthTool = com.example.data.mcp.JsSandboxExecutor.buildSyntheticToolEntity()
+            val callReq = ModelToolCallRequest(
+                id = "manual_run_${System.currentTimeMillis()}",
+                toolName = com.example.data.mcp.JsSandboxExecutor.RUN_CODE_TOOL_NAME,
+                argumentsJson = argsJson
+            )
+            val approvalReq = PendingToolApprovalRequest(
+                server = synthServer,
+                tool = synthTool,
+                callRequest = callReq,
+                iterationIndex = 1,
+                maxIterations = 1
+            )
+            _uiState.update { it.copy(pendingToolApproval = approvalReq) }
+            val decision = approvalReq.decisionDeferred.await()
+            _uiState.update { it.copy(pendingToolApproval = null) }
+            if (decision == ToolApprovalDecision.DENY) {
+                return@launch
+            }
+            val targetMsgId = messageId.ifBlank {
+                activeMessages.value.lastOrNull { it.role.equals("ASSISTANT", ignoreCase = true) }?.id ?: "manual_msg"
+            }
+            val logEntry = repository.executeSandboxedCodeAndLog(
+                conversationId = convId,
+                messageId = targetMsgId,
+                argumentsJson = argsJson
+            )
+            val details = com.example.data.mcp.JsSandboxExecutor.buildRunConfirmationDetails(argsJson, language)
+            if (logEntry.isSuccess && details.language in setOf(
+                    com.example.data.mcp.RunnerLanguage.HTML,
+                    com.example.data.mcp.RunnerLanguage.CSS,
+                    com.example.data.mcp.RunnerLanguage.JAVASCRIPT
+                )
+            ) {
+                val htmlDoc = when (details.language) {
+                    com.example.data.mcp.RunnerLanguage.HTML ->
+                        com.example.data.mcp.JsSandboxExecutor.buildFullHtmlDocument(html = code, css = details.css, js = details.js)
+                    com.example.data.mcp.RunnerLanguage.CSS ->
+                        com.example.data.mcp.JsSandboxExecutor.buildFullHtmlDocument(
+                            html = "<div class=\"preview-root\"><h2>CSS Preview</h2><p>Styled preview container</p></div>",
+                            css = code
+                        )
+                    else ->
+                        com.example.data.mcp.JsSandboxExecutor.buildFullHtmlDocument(
+                            html = "<div id=\"app\"></div><pre id=\"console-out\">${logEntry.resultText.replace("<", "&lt;")}</pre>",
+                            css = "body { font-family: monospace; padding: 12px; }",
+                            js = code
+                        )
+                }
+                openHtmlPreviewPanel(
+                    htmlDocument = htmlDoc,
+                    title = "${details.languageLabel} Preview"
+                )
+            } else if (!logEntry.isSuccess) {
+                _uiState.update {
+                    it.copy(statusToast = logEntry.resultText.lines().firstOrNull() ?: "Code execution failed")
+                }
+            }
         }
     }
 
