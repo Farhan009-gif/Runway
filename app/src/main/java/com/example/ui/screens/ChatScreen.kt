@@ -260,10 +260,32 @@ fun ChatWorkspaceScreen(
 
     var showToolsSheet by rememberSaveable { mutableStateOf(false) }
     var showAttachSheet by rememberSaveable { mutableStateOf(false) }
+    var showHtmlCodeInputSheet by rememberSaveable { mutableStateOf(false) }
     var showChatMediaGenerateSheet by rememberSaveable { mutableStateOf(false) }
     var chatMediaGenerateModality by rememberSaveable { mutableStateOf("IMAGE") }
     var showChatComboBuilderDialog by rememberSaveable { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ConversationEntity?>(null) }
+
+    if (showHtmlCodeInputSheet) {
+        com.example.ui.components.HtmlCssJsCodeInputBottomSheet(
+            onDismiss = { showHtmlCodeInputSheet = false },
+            onRunInSandboxWithConfirmation = { html, css, js ->
+                val fullDoc = com.example.data.mcp.JsSandboxExecutor.buildFullHtmlDocument(
+                    html = html,
+                    css = css,
+                    js = js
+                )
+                showHtmlCodeInputSheet = false
+                onRunCodeBlock("html", fullDoc, null)
+            },
+            onInsertIntoChat = { markdownBlock ->
+                val existing = uiState.draftMessage.trim()
+                val nextDraft = if (existing.isEmpty()) markdownBlock else "$existing\n\n$markdownBlock"
+                onDraftChange(nextDraft)
+                showHtmlCodeInputSheet = false
+            }
+        )
+    }
 
     if (showChatMediaGenerateSheet) {
         ChatMediaGenerateBottomSheet(
@@ -506,6 +528,16 @@ fun ChatWorkspaceScreen(
                 testTag = "tools_sheet_generate_media"
             )
             MinimalToolRow(
+                icon = LucideIcons.Code,
+                title = "HTML/CSS/JS Code Input & Templates",
+                subtitle = "Starter boilerplates ('Centered Card', 'CSS Grid Layout', 'Interactive Button' & online)",
+                onClick = {
+                    showToolsSheet = false
+                    showHtmlCodeInputSheet = true
+                },
+                testTag = "tools_sheet_html_code_input"
+            )
+            MinimalToolRow(
                 icon = LucideIcons.Terminal,
                 title = "Console",
                 subtitle = "OmniRoute localhost daemon & model health check",
@@ -619,6 +651,16 @@ fun ChatWorkspaceScreen(
                     )
                 },
                 testTag = "attach_sheet_video"
+            )
+            MinimalToolRow(
+                icon = LucideIcons.Code,
+                title = "HTML/CSS/JS Code Input & Templates",
+                subtitle = "Pick 'Centered Card', 'CSS Grid Layout', 'Interactive Button' or import online",
+                onClick = {
+                    showAttachSheet = false
+                    showHtmlCodeInputSheet = true
+                },
+                testTag = "attach_sheet_html_code_input"
             )
             MinimalToolRow(
                 icon = LucideIcons.Sparkles,

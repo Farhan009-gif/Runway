@@ -1930,6 +1930,13 @@ fun HtmlCssJsPreviewPanelSheet(
     js: String = ""
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var currentHtml by rememberSaveable(htmlDocument) { mutableStateOf(htmlDocument) }
+    var currentCss by rememberSaveable(css) { mutableStateOf(css) }
+    var currentJs by rememberSaveable(js) { mutableStateOf(js) }
+    var currentTitle by rememberSaveable(title) { mutableStateOf(title) }
+    var selectedTemplateId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCodeEditorAndTemplates by rememberSaveable { mutableStateOf(false) }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -1941,6 +1948,7 @@ fun HtmlCssJsPreviewPanelSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1952,7 +1960,7 @@ fun HtmlCssJsPreviewPanelSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = title.ifBlank { "HTML / CSS / JS Preview Panel" },
+                        text = currentTitle.ifBlank { "HTML / CSS / JS Preview Panel" },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1962,19 +1970,89 @@ fun HtmlCssJsPreviewPanelSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.testTag("close_html_preview_panel_button")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Close")
+                    OutlinedButton(
+                        onClick = { showCodeEditorAndTemplates = !showCodeEditorAndTemplates },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("preview_sheet_toggle_templates_button")
+                    ) {
+                        Text(
+                            text = if (showCodeEditorAndTemplates) "Hide Editor" else "Templates & Code",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("close_html_preview_panel_button")
+                    ) {
+                        Text("Close")
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = showCodeEditorAndTemplates) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    HtmlCssJsTemplateSelector(
+                        selectedTemplateId = selectedTemplateId,
+                        onSelectTemplate = { tpl ->
+                            selectedTemplateId = tpl.id
+                            currentTitle = "${tpl.title} Preview"
+                            currentHtml = tpl.html
+                            currentCss = tpl.css
+                            currentJs = tpl.js
+                        }
+                    )
+                    OutlinedTextField(
+                        value = currentHtml,
+                        onValueChange = { currentHtml = it },
+                        label = { Text("HTML") },
+                        minLines = 3,
+                        maxLines = 6,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("preview_sheet_html_input")
+                    )
+                    OutlinedTextField(
+                        value = currentCss,
+                        onValueChange = { currentCss = it },
+                        label = { Text("CSS") },
+                        minLines = 2,
+                        maxLines = 5,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("preview_sheet_css_input")
+                    )
+                    OutlinedTextField(
+                        value = currentJs,
+                        onValueChange = { currentJs = it },
+                        label = { Text("JS") },
+                        minLines = 2,
+                        maxLines = 5,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("preview_sheet_js_input")
+                    )
                 }
             }
 
             WebViewPreviewer(
-                html = htmlDocument,
-                css = css,
-                js = js,
-                title = title.ifBlank { "Sandboxed HTML / CSS / JS Preview Panel" },
+                html = currentHtml,
+                css = currentCss,
+                js = currentJs,
+                title = currentTitle.ifBlank { "Sandboxed HTML / CSS / JS Preview Panel" },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(380.dp)

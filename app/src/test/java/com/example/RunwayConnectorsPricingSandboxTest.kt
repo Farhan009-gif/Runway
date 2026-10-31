@@ -627,5 +627,74 @@ class RunwayConnectorsPricingSandboxTest {
         assertNotNull(oversizedPayload.errorMessage)
         assertTrue(oversizedPayload.fullHtmlDocument.isEmpty())
     }
+
+    @Test
+    fun htmlCssJsTemplateCatalog_providesCenteredCard_cssGridLayout_interactiveButton_andOnlineTemplates() = runBlocking {
+        val all = com.example.data.mcp.HtmlCssJsTemplateCatalog.allTemplates()
+        assertTrue(all.size >= 15)
+
+        val centeredCard = com.example.data.mcp.HtmlCssJsTemplateCatalog.findByTitleOrId("Centered Card")
+        val cssGrid = com.example.data.mcp.HtmlCssJsTemplateCatalog.findByTitleOrId("CSS Grid Layout")
+        val interactiveBtn = com.example.data.mcp.HtmlCssJsTemplateCatalog.findByTitleOrId("Interactive Button")
+
+        assertNotNull(centeredCard)
+        assertNotNull(cssGrid)
+        assertNotNull(interactiveBtn)
+
+        assertEquals("Centered Card", centeredCard!!.title)
+        assertTrue(centeredCard.html.isNotBlank() && centeredCard.css.isNotBlank() && centeredCard.js.isNotBlank())
+
+        assertEquals("CSS Grid Layout", cssGrid!!.title)
+        assertTrue(cssGrid.css.contains("grid"))
+
+        assertEquals("Interactive Button", interactiveBtn!!.title)
+        assertTrue(interactiveBtn.js.contains("addEventListener"))
+
+        // Verify online curated templates and category filtering
+        val onlineList = com.example.data.mcp.HtmlCssJsTemplateCatalog.filterTemplates(
+            category = com.example.data.mcp.HtmlCssJsTemplateCategory.ONLINE_HUB
+        )
+        assertTrue(onlineList.isNotEmpty())
+        assertTrue(onlineList.all { it.isOnlineCurated })
+
+        // Verify live HTTP fetching & HTML/CSS/JS extraction from an online endpoint
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.createContext("/online-widget.html") { exchange ->
+                val rawHtml = """
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                      <title>Online Glass Widget</title>
+                      <style>.widget { display: flex; color: #38bdf8; }</style>
+                    </head>
+                    <body>
+                      <div class="widget" id="w">Hello from Online Template</div>
+                      <script>console.log('online widget loaded');</script>
+                    </body>
+                    </html>
+                """.trimIndent()
+                val bytes = rawHtml.toByteArray(Charsets.UTF_8)
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            server.start()
+            val port = server.address.port
+
+            val fetchedResult = com.example.data.mcp.HtmlCssJsTemplateCatalog.fetchOnlineTemplatesFromUrl(
+                url = "http://127.0.0.1:$port/online-widget.html"
+            )
+            assertTrue(fetchedResult.isSuccess)
+            val fetched = fetchedResult.getOrThrow()
+            assertEquals(1, fetched.size)
+            assertEquals("Online Glass Widget", fetched.first().title)
+            assertTrue(fetched.first().html.contains("Hello from Online Template"))
+            assertTrue(fetched.first().css.contains(".widget { display: flex; color: #38bdf8; }"))
+            assertTrue(fetched.first().js.contains("console.log('online widget loaded');"))
+        } finally {
+            server.stop(0)
+        }
+    }
 }
+
 

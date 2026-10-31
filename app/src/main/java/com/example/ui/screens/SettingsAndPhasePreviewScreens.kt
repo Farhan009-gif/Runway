@@ -503,6 +503,25 @@ fun MinimalSettingsAndThemeScreen(
                             )
                         }
                     }
+
+                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
+
+                    var showSettingsHtmlCodeInputSheet by rememberSaveable { mutableStateOf(false) }
+                    if (showSettingsHtmlCodeInputSheet) {
+                        com.example.ui.components.HtmlCssJsCodeInputBottomSheet(
+                            onDismiss = { showSettingsHtmlCodeInputSheet = false }
+                        )
+                    }
+
+                    MinimalButton(
+                        text = "Open HTML/CSS/JS Code Input & Templates",
+                        icon = LucideIcons.Code,
+                        onClick = { showSettingsHtmlCodeInputSheet = true },
+                        filled = false,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("open_settings_html_code_input_button")
+                    )
                 }
             }
         }
