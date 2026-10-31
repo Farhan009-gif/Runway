@@ -279,6 +279,14 @@ abstract class OmniDatabase : RoomDatabase() {
                     "omniai_studio.db"
                 )
                     .addMigrations(MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    // WARNING: fallbackToDestructiveMigration() MUST NOT be used for schema changes
+                    // that need to preserve existing user data. Always provide an explicit Migration.
+                    // Future Migration Checklist:
+                    // 1. Increment @Database(version = N + 1) above.
+                    // 2. Define MIGRATION_N_(N+1) with exact SQL matching the updated Room Entity definitions
+                    //    (including NOT NULL constraints, default values, primary keys, and indices).
+                    // 3. Register the new Migration in .addMigrations(...) above.
+                    // 4. Verify the migration preserves existing rows and matches Room's expected TableInfo.
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

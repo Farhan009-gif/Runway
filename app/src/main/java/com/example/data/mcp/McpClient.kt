@@ -13,6 +13,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 data class McpDiscoveryResult(
@@ -44,8 +45,7 @@ class McpClient(
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val requestIdCounter = AtomicInteger(1)
 
-    @Volatile
-    private var sessionIdsByServer = mapOf<String, String>()
+    private val sessionIdsByServer = ConcurrentHashMap<String, String>()
 
     /**
      * Tests the connection to an MCP server and discovers its `tools/list`,
@@ -223,7 +223,7 @@ class McpClient(
             val sessionHeader = response.header("Mcp-Session-Id")
                 ?: response.header("mcp-session-id")
             if (!sessionHeader.isNullOrBlank()) {
-                sessionIdsByServer = sessionIdsByServer + (server.id to sessionHeader.trim())
+                sessionIdsByServer[server.id] = sessionHeader.trim()
             }
 
             val rawBody = response.body?.string().orEmpty()

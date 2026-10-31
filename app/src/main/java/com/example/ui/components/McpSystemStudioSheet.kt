@@ -99,6 +99,7 @@ fun McpSystemStudioSheet(
         val okHttp = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
             .build()
         val logger = McpDiagnosticLogger()
         val mcpClient = McpClient(okHttp)

@@ -97,6 +97,14 @@ class OmniRepository(
             .build()
     }
 
+    val fileUploadOkHttpClient: OkHttpClient by lazy {
+        okHttpClient.newBuilder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .build()
+    }
+
     val openAiProvider: OpenAICompatibleProvider by lazy {
         OpenAICompatibleProvider(okHttpClient)
     }
@@ -110,7 +118,7 @@ class OmniRepository(
     }
 
     val stabilityProvider: StabilityProvider by lazy {
-        StabilityProvider(okHttpClient)
+        StabilityProvider(fileUploadOkHttpClient)
     }
 
     val replicateProvider: ReplicateProvider by lazy {
@@ -134,7 +142,7 @@ class OmniRepository(
     }
 
     val youTubeClient: YouTubeIntegrationClient by lazy {
-        YouTubeIntegrationClient(okHttpClient)
+        YouTubeIntegrationClient(fileUploadOkHttpClient)
     }
 
     val mcpClient: McpClient by lazy {

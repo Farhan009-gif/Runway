@@ -7,7 +7,9 @@ import android.provider.OpenableColumns
 import com.example.data.provider.ModelPriceTable
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
+import java.util.UUID
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 import java.util.zip.ZipEntry
@@ -25,6 +27,49 @@ object FileAttachmentProcessor {
     const val MAX_FILES_PER_MESSAGE: Int = 5 // 5 per message
     const val MAX_EXTRACTED_CHARS: Int = 100_000
     const val MIDDLE_TRIMMED_MARKER: String = "[middle trimmed]"
+
+    /**
+     * Builds a safe destination file name from [originalName]:
+     * - Keeps only the last path segment
+     * - Strips any "..", "/", or "\" characters
+     * - Falls back to a generated name if the result is empty
+     */
+    fun sanitizeAttachmentFileName(originalName: String?): String {
+        val raw = originalName.orEmpty().trim()
+        val lastSegment = raw
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+        val stripped = lastSegment
+            .replace("..", "")
+            .replace("/", "")
+            .replace("\\", "")
+            .trim()
+            .trim('.')
+        return if (stripped.isEmpty()) {
+            "attachment_${UUID.randomUUID().toString().take(8)}.txt"
+        } else {
+            stripped
+        }
+    }
+
+    /**
+     * Resolves a destination [File] inside [attachmentDir] and verifies that its canonical path
+     * remains strictly within [attachmentDir].
+     */
+    fun resolveSafeAttachmentDestination(attachmentDir: File, originalName: String?): File {
+        val canonicalBase = attachmentDir.canonicalFile
+        val safeName = sanitizeAttachmentFileName(originalName)
+        val candidate = File(canonicalBase, safeName).canonicalFile
+        val basePrefix = if (canonicalBase.path.endsWith(File.separator)) {
+            canonicalBase.path
+        } else {
+            canonicalBase.path + File.separator
+        }
+        if (!candidate.path.startsWith(basePrefix)) {
+            throw SecurityException("Destination file path escaped attachment directory.")
+        }
+        return candidate
+    }
 
     enum class AttachmentPreset(val label: String, val prompt: String) {
         SUMMARISE("Summarise", "Summarise the attached file(s) concisely."),
@@ -327,7 +372,7 @@ object FileAttachmentProcessor {
      * treating file contents strictly as data.
      */
     fun formatFileAttachmentSection(fileName: String, rawOrTrimmedContent: String): String {
-        val safeName = fileName.trim().ifBlank { "attachment.txt" }
+        val safeName = sanitizeAttachmentFileName(fileName)
         val trimmed = trimExtractedText(rawOrTrimmedContent)
         return buildString {
             append("--- File: ").append(safeName).append(" ---\n")
@@ -411,14 +456,14 @@ object FileAttachmentProcessor {
     ): Result<ChatMediaAttachment> {
         return runCatching {
             val resolver = context.contentResolver
-            var displayName = uri.lastPathSegment?.substringAfterLast('/') ?: "document.txt"
+            var rawDisplayName = uri.lastPathSegment
             var sizeBytes = 0L
 
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
-                        displayName = cursor.getString(nameIdx) ?: displayName
+                        rawDisplayName = cursor.getString(nameIdx) ?: rawDisplayName
                     }
                     val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
                     if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
@@ -426,6 +471,10 @@ object FileAttachmentProcessor {
                     }
                 }
             }
+
+            val attachmentDir = File(context.filesDir, "attachments").apply { mkdirs() }
+            val destinationFile = resolveSafeAttachmentDestination(attachmentDir, rawDisplayName)
+            val displayName = destinationFile.name
 
             val preValidation = validateAttachmentLimits(
                 fileSizeBytes = sizeBytes,
